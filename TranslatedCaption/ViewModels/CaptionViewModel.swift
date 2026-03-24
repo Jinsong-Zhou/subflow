@@ -197,10 +197,13 @@ final class CaptionViewModel {
                 }
             }
         }
-        guard bestIndex > 3 else { return nil }  // need at least a few chars before boundary
+        guard bestIndex > 3 else { return nil }
 
         let completed = String(text.prefix(bestIndex)).trimmingCharacters(in: .whitespaces)
         let remainder = String(text.suffix(text.count - bestIndex)).trimmingCharacters(in: .whitespaces)
+
+        // Completed must be a real sentence (not a short residual fragment like "exhaust.")
+        guard completed.count >= 20, !remainder.isEmpty else { return nil }
         guard !completed.isEmpty, !remainder.isEmpty else { return nil }
         return (completed, remainder)
     }
@@ -284,8 +287,11 @@ final class CaptionViewModel {
                 let recentChunk = Array(self.audioBuffer.suffix(sampleRate / 3))
                 if self.isSilent(recentChunk) && self.streamingEnglish.isEmpty { continue }
 
-                // ── Transcribe full buffer ──
-                let snapshot = self.audioBuffer
+                // ── Transcribe buffer (cap at 15s to keep inference fast) ──
+                let maxTranscribeSamples = sampleRate * 15
+                let snapshot = self.audioBuffer.count > maxTranscribeSamples
+                    ? Array(self.audioBuffer.suffix(maxTranscribeSamples))
+                    : self.audioBuffer
                 lastTranscribeBufferSize = self.audioBuffer.count
 
                 do {

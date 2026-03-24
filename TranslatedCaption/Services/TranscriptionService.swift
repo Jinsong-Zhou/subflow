@@ -15,7 +15,7 @@ final class TranscriptionService: @unchecked Sendable {
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
         let config = WhisperKitConfig(
-            model: "openai_whisper-base",
+            model: "openai_whisper-large-v3-v20240930_turbo_632MB",
             downloadBase: modelDir,
             verbose: false,
             logLevel: .error,

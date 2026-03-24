@@ -94,12 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupFloatingPanel() {
         let panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 160)
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 200)
         )
 
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
-            let x = screenFrame.midX - 260
+            let x = screenFrame.midX - 310
             let y = screenFrame.minY + 60
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         }

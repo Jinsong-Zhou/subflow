@@ -11,9 +11,11 @@ struct FloatingCaptionView: View {
                     Text(entry.englishText)
                         .font(.system(size: 15))
                         .foregroundStyle(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(entry.chineseText)
                         .font(.system(size: 14))
                         .foregroundStyle(Color(red: 0.47, green: 0.78, blue: 1.0).opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -23,10 +25,12 @@ struct FloatingCaptionView: View {
                     Text(viewModel.streamingEnglish)
                         .font(.system(size: 15))
                         .foregroundStyle(.white.opacity(0.95))
+                        .fixedSize(horizontal: false, vertical: true)
                     if !viewModel.streamingChinese.isEmpty {
                         Text(viewModel.streamingChinese)
                             .font(.system(size: 14))
                             .foregroundStyle(Color(red: 0.47, green: 0.78, blue: 1.0).opacity(0.9))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .contentTransition(.numericText())
@@ -37,7 +41,7 @@ struct FloatingCaptionView: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.recentCaptions.count)
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
-        .frame(maxWidth: 520, alignment: .leading)
+        .frame(width: 620, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(.black.opacity(0.85))
