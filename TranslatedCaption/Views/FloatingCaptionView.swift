@@ -5,17 +5,36 @@ struct FloatingCaptionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Confirmed captions (faded history)
             ForEach(viewModel.recentCaptions) { entry in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(entry.englishText)
                         .font(.system(size: 15))
-                        .foregroundStyle(.white.opacity(0.95))
+                        .foregroundStyle(.white.opacity(0.45))
                     Text(entry.chineseText)
                         .font(.system(size: 14))
-                        .foregroundStyle(Color(red: 0.47, green: 0.78, blue: 1.0).opacity(0.9))
+                        .foregroundStyle(Color(red: 0.47, green: 0.78, blue: 1.0).opacity(0.45))
                 }
             }
+
+            // Current streaming line (bright, actively updating)
+            if !viewModel.streamingEnglish.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(viewModel.streamingEnglish)
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white.opacity(0.95))
+                    if !viewModel.streamingChinese.isEmpty {
+                        Text(viewModel.streamingChinese)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color(red: 0.47, green: 0.78, blue: 1.0).opacity(0.9))
+                    }
+                }
+                .contentTransition(.numericText())
+            }
         }
+        .animation(.easeInOut(duration: 0.15), value: viewModel.streamingEnglish)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.streamingChinese)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.recentCaptions.count)
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
         .frame(maxWidth: 520, alignment: .leading)

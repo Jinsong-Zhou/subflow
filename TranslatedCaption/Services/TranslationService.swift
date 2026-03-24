@@ -1,6 +1,6 @@
 import Translation
 
-final class TranslationService {
+final class TranslationService: @unchecked Sendable {
     private var session: TranslationSession?
 
     var configuration: TranslationSession.Configuration {

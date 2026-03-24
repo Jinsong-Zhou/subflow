@@ -72,6 +72,15 @@ struct MainWindowView: View {
                         CaptionRow(entry: entry)
                             .id(entry.id)
                     }
+
+                    // Current streaming line (live)
+                    if !viewModel.streamingEnglish.isEmpty {
+                        StreamingRow(
+                            english: viewModel.streamingEnglish,
+                            chinese: viewModel.streamingChinese
+                        )
+                        .id("streaming")
+                    }
                 }
                 .padding(16)
             }
@@ -80,6 +89,11 @@ struct MainWindowView: View {
                     withAnimation {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
+                }
+            }
+            .onChange(of: viewModel.streamingEnglish) {
+                withAnimation {
+                    proxy.scrollTo("streaming", anchor: .bottom)
                 }
             }
         }
@@ -105,5 +119,36 @@ private struct CaptionRow: View {
         .overlay(alignment: .bottom) {
             Divider().opacity(0.3)
         }
+    }
+}
+
+private struct StreamingRow: View {
+    let english: String
+    let chinese: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 6, height: 6)
+                Text("LIVE")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.green.opacity(0.8))
+            }
+            Text(english)
+                .font(.system(size: 14))
+                .foregroundStyle(.white)
+                .contentTransition(.numericText())
+            if !chinese.isEmpty {
+                Text(chinese)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(red: 0.47, green: 0.78, blue: 1.0))
+                    .contentTransition(.numericText())
+            }
+        }
+        .padding(.vertical, 10)
+        .animation(.easeInOut(duration: 0.15), value: english)
+        .animation(.easeInOut(duration: 0.15), value: chinese)
     }
 }

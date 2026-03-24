@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyManager: HotkeyManager?
     private var popover = NSPopover()
     private var translationWindow: NSWindow?
+    private var notificationObserver: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLogger.clear()
@@ -28,10 +29,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupFloatingPanel()
         setupHotkey()
+        setupRemoteControl()
         updateFloatingPanelWithTranslation()
 
         // Pre-load WhisperKit model in background so Start is instant
         viewModel.preloadModel()
+    }
+
+    /// Listen for distributed notification to toggle recording (for testing/automation)
+    private func setupRemoteControl() {
+        // File-based remote control: `touch /tmp/tc-toggle` to toggle recording
+        AppLogger.log("Setting up remote control")
+        let vm = viewModel
+        Task {
+            let togglePath = "/tmp/tc-toggle"
+            try? FileManager.default.removeItem(atPath: togglePath)
+            AppLogger.log("Remote control loop started, watching \(togglePath)")
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                if FileManager.default.fileExists(atPath: togglePath) {
+                    try? FileManager.default.removeItem(atPath: togglePath)
+                    AppLogger.log("Received file toggle trigger")
+                    await MainActor.run { vm.toggleCapture() }
+                }
+            }
+        }
     }
 
     private func setupStatusItem() {
