@@ -10,11 +10,11 @@ final class CaptionViewModel {
     var isModelReady = false
     var statusMessage = ""
 
-    // Streaming state — updates every ~0.7s as audio accumulates
+    // Streaming state — updates every ~0.3s as audio accumulates
     var streamingEnglish = ""
     var streamingChinese = ""
 
-    // Confirmed captions (finalized after silence or max buffer)
+    // Confirmed captions (finalized after silence or sentence boundary)
     var captionHistory: [CaptionEntry] = []
     var recentCaptions: [CaptionEntry] = []
 
@@ -131,7 +131,6 @@ final class CaptionViewModel {
         Task { await service?.stop() }
         audioCaptureService = nil
 
-        // Finalize any remaining streaming text
         if !streamingEnglish.isEmpty {
             addCaption(english: streamingEnglish, chinese: streamingChinese)
         }
@@ -141,7 +140,7 @@ final class CaptionViewModel {
         consecutiveSilentSamples = 0
     }
 
-    // MARK: - Audio Analysis
+    // MARK: - Text Analysis
 
     private func isSilent(_ samples: [Float], threshold: Float = 0.01) -> Bool {
         guard !samples.isEmpty else { return true }
@@ -149,25 +148,73 @@ final class CaptionViewModel {
         return rms < threshold
     }
 
+    /// Strip bracketed hallucination markers like [BLANK_AUDIO], (speaking foreign language)
+    private func cleanTranscription(_ text: String) -> String {
+        var cleaned = text
+        // Remove [anything] patterns
+        cleaned = cleaned.replacingOccurrences(
+            of: "\\[[^\\]]*\\]",
+            with: "",
+            options: .regularExpression
+        )
+        // Remove (audio description) patterns
+        cleaned = cleaned.replacingOccurrences(
+            of: "\\([^)]*(?:audio|language|music|silence|laughter|applause)[^)]*\\)",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // Collapse multiple spaces
+        cleaned = cleaned.replacingOccurrences(
+            of: "\\s{2,}",
+            with: " ",
+            options: .regularExpression
+        )
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func isHallucination(_ text: String) -> Bool {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let hallucinations = [
-            "you", "thank you", "thanks for watching", "bye", "...", "",
-            "[blank_audio]", "(blank audio)", "[silence]",
+            "you", "thank you", "thanks for watching", "bye",
+            "thanks for listening", "see you next time", "subscribe",
+            "...", "",
         ]
-        return hallucinations.contains(lower)
-            || lower.count < 3
-            || lower.hasPrefix("[") && lower.hasSuffix("]")
-            || lower.hasPrefix("(") && lower.hasSuffix(")")
+        return hallucinations.contains(lower) || lower.count < 3
+    }
+
+    /// Find the last sentence boundary (". " / "? " / "! ") that splits text into
+    /// completed sentences + a remaining fragment. Returns nil if no split point.
+    private func splitAtLastSentenceBoundary(_ text: String) -> (completed: String, remainder: String)? {
+        let sentenceEnders: [(String, Int)] = [
+            (". ", 2), ("? ", 2), ("! ", 2),   // period/question/exclamation + space
+        ]
+        var bestIndex = -1
+        for (ender, len) in sentenceEnders {
+            if let range = text.range(of: ender, options: .backwards) {
+                let idx = text.distance(from: text.startIndex, to: range.lowerBound) + len
+                if idx > bestIndex && idx < text.count {
+                    bestIndex = idx
+                }
+            }
+        }
+        guard bestIndex > 3 else { return nil }  // need at least a few chars before boundary
+
+        let completed = String(text.prefix(bestIndex)).trimmingCharacters(in: .whitespaces)
+        let remainder = String(text.suffix(text.count - bestIndex)).trimmingCharacters(in: .whitespaces)
+        guard !completed.isEmpty, !remainder.isEmpty else { return nil }
+        return (completed, remainder)
     }
 
     // MARK: - Streaming Pipeline
 
     private func runStreamingPipeline(audioStream: AsyncStream<[Float]>) {
         let sampleRate = 16000
-        let silenceLimit = Int(1.5 * Double(sampleRate))   // 1.5s silence → finalize
-        let maxBufferSize = sampleRate * 6                  // 6s max before forced finalize
-        let overlapSamples = sampleRate / 2                 // 0.5s overlap on finalize
+
+        // Timing thresholds
+        let silenceForFinalize = Int(1.5 * Double(sampleRate))  // 1.5s silence → commit text
+        let silenceForPurge = sampleRate * 2                     // 2s silence + no text → purge buffer
+        let sentenceSplitThreshold = sampleRate * 4              // 4s → start splitting at sentence boundaries
+        let maxBufferSize = sampleRate * 15                      // 15s absolute safety cap
 
         // Task 1: Accumulate audio into shared buffer
         accumulatorTask = Task {
@@ -183,57 +230,106 @@ final class CaptionViewModel {
             }
         }
 
-        // Task 2: Adaptive transcription — polls quickly, fires when enough new audio
+        // Task 2: Adaptive transcription with sentence-aware finalization
         pipelineTask = Task {
             guard let transcription = self.transcriptionService else { return }
             var lastTranscription = ""
             var lastTranscribeBufferSize = 0
-            let minNewSamples = sampleRate / 4  // need at least ~0.25s of new audio
+            let minNewSamples = sampleRate / 4
 
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(200))
                 if Task.isCancelled { break }
 
-                // --- Finalize check ---
-                let shouldFinalize = !self.streamingEnglish.isEmpty && (
-                    self.consecutiveSilentSamples >= silenceLimit ||
-                    self.audioBuffer.count >= maxBufferSize
-                )
+                // ── Silence purge: 2s+ silence with no streaming → clear everything ──
+                // Prevents hallucination after long silence periods
+                if self.consecutiveSilentSamples >= silenceForPurge
+                    && self.streamingEnglish.isEmpty
+                {
+                    self.audioBuffer.removeAll()
+                    lastTranscription = ""
+                    lastTranscribeBufferSize = 0
+                    continue
+                }
 
-                if shouldFinalize {
+                // ── Silence finalize: 1.5s silence with active text → commit ──
+                if self.consecutiveSilentSamples >= silenceForFinalize
+                    && !self.streamingEnglish.isEmpty
+                {
                     await self.finalizeCurrentCaption()
-                    let overlap = min(self.audioBuffer.count, overlapSamples)
-                    self.audioBuffer = Array(self.audioBuffer.suffix(overlap))
+                    self.audioBuffer.removeAll()  // full clear after silence (no hallucination risk)
+                    self.consecutiveSilentSamples = 0
+                    lastTranscription = ""
+                    lastTranscribeBufferSize = 0
+                    continue
+                }
+
+                // ── Max buffer safety: hard finalize at 15s ──
+                if self.audioBuffer.count >= maxBufferSize && !self.streamingEnglish.isEmpty {
+                    AppLogger.log("Max buffer reached, force finalize")
+                    await self.finalizeCurrentCaption()
+                    // Keep 2s of audio for context continuity
+                    self.audioBuffer = Array(self.audioBuffer.suffix(sampleRate * 2))
                     self.consecutiveSilentSamples = 0
                     lastTranscription = ""
                     lastTranscribeBufferSize = self.audioBuffer.count
                     continue
                 }
 
-                // --- Skip if not enough new audio since last transcription ---
+                // ── Skip if not enough new audio ──
                 let newSamples = self.audioBuffer.count - lastTranscribeBufferSize
                 guard newSamples >= minNewSamples else { continue }
 
-                // --- Skip if recent audio is silent and nothing streaming ---
+                // ── Skip if silent and nothing streaming ──
                 let recentChunk = Array(self.audioBuffer.suffix(sampleRate / 3))
                 if self.isSilent(recentChunk) && self.streamingEnglish.isEmpty { continue }
 
-                // --- Transcribe full buffer ---
+                // ── Transcribe full buffer ──
                 let snapshot = self.audioBuffer
-
                 lastTranscribeBufferSize = self.audioBuffer.count
 
                 do {
-                    let english = try await transcription.transcribe(audioBuffer: snapshot)
+                    var english = try await transcription.transcribe(audioBuffer: snapshot)
+
+                    // Clean bracketed hallucination markers
+                    english = self.cleanTranscription(english)
 
                     guard !self.isHallucination(english) else { continue }
                     guard english != lastTranscription else { continue }
 
                     lastTranscription = english
+
+                    // ── Mid-stream sentence split (buffer > 4s) ──
+                    // Commit completed sentences so reader sees stable text
+                    if self.audioBuffer.count >= sentenceSplitThreshold,
+                       let (completed, remainder) = self.splitAtLastSentenceBoundary(english)
+                    {
+                        // Translate and commit completed sentences
+                        let chinese = (try? await self.translationService.translate(completed)) ?? ""
+                        AppLogger.log("Sentence split EN: \(completed)")
+                        AppLogger.log("Sentence split ZH: \(chinese)")
+                        self.addCaption(english: completed, chinese: chinese)
+
+                        // Show remainder as ongoing streaming
+                        self.streamingEnglish = remainder
+                        let remainderZH = (try? await self.translationService.translate(remainder)) ?? ""
+                        self.streamingChinese = remainderZH
+                        AppLogger.log("Streaming EN: \(remainder)")
+                        AppLogger.log("Streaming ZH: \(remainderZH)")
+
+                        // Trim buffer: estimate how much audio the remainder covers
+                        let ratio = max(Double(remainder.count) / Double(english.count), 0.2)
+                        let keepSamples = Int(Double(self.audioBuffer.count) * ratio) + sampleRate
+                        self.audioBuffer = Array(self.audioBuffer.suffix(min(keepSamples, self.audioBuffer.count)))
+                        lastTranscribeBufferSize = self.audioBuffer.count
+                        lastTranscription = ""  // reset: trimmed buffer will produce different text
+                        continue
+                    }
+
+                    // ── Normal streaming update ──
                     self.streamingEnglish = english
                     AppLogger.log("Streaming EN: \(english)")
 
-                    // Translate sequentially (Apple Translation is ~100ms, fast enough)
                     do {
                         let chinese = try await self.translationService.translate(english)
                         self.streamingChinese = chinese
