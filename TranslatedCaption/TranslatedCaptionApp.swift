@@ -3,40 +3,77 @@ import Translation
 
 @main
 struct TranslatedCaptionApp: App {
-    @State private var viewModel = CaptionViewModel()
-    @State private var floatingPanel: FloatingPanel?
-    @State private var hotkeyManager: HotkeyManager?
-    @State private var translationConfig: TranslationSession.Configuration?
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            MainWindowView()
-                .environment(viewModel)
-                .translationTask(translationConfig) { session in
-                    viewModel.setTranslationSession(session)
-                }
-                .onAppear {
-                    translationConfig = viewModel.translationService.configuration
-                    setupFloatingPanel()
-                    setupHotkey()
-                }
-                .onDisappear { teardown() }
+        Settings {
+            EmptyView()
         }
-        .windowStyle(.titleBar)
-        .defaultSize(width: 600, height: 500)
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem!
+    private var viewModel = CaptionViewModel()
+    private var floatingPanel: FloatingPanel?
+    private var hotkeyManager: HotkeyManager?
+    private var popover = NSPopover()
+    private var translationWindow: NSWindow?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppLogger.clear()
+        AppLogger.log("App launched. Log file: \(AppLogger.path)")
+
+        setupStatusItem()
+        setupFloatingPanel()
+        setupHotkey()
+        updateFloatingPanelWithTranslation()
+
+        // Pre-load WhisperKit model in background so Start is instant
+        viewModel.preloadModel()
     }
 
-    @MainActor
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "captions.bubble", accessibilityDescription: "TranslatedCaption")
+            button.action = #selector(togglePopover)
+            button.target = self
+        }
+
+        let menuBarView = MenuBarView(
+            onToggleCapture: { [weak self] in self?.viewModel.toggleCapture() },
+            onOpenTranscript: { [weak self] in self?.openTranscriptWindow() },
+            onQuit: { [weak self] in
+                self?.viewModel.stopCapture()
+                NSApp.terminate(nil)
+            }
+        )
+        .environment(viewModel)
+
+        popover.contentSize = NSSize(width: 240, height: 180)
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: menuBarView)
+    }
+
+    @objc private func togglePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+        } else if let button = statusItem.button {
+            button.image = NSImage(
+                systemSymbolName: viewModel.isRecording ? "captions.bubble.fill" : "captions.bubble",
+                accessibilityDescription: "TranslatedCaption"
+            )
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
     private func setupFloatingPanel() {
         let panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 160)
         )
-
-        let hostingView = NSHostingView(
-            rootView: FloatingCaptionView()
-                .environment(viewModel)
-        )
-        panel.contentView = hostingView
 
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
@@ -49,21 +86,50 @@ struct TranslatedCaptionApp: App {
         floatingPanel = panel
     }
 
-    @MainActor
+    private func updateFloatingPanelWithTranslation() {
+        let config = viewModel.translationService.configuration
+        let content = FloatingCaptionView()
+            .environment(viewModel)
+            .translationTask(config) { [weak self] session in
+                self?.viewModel.setTranslationSession(session)
+            }
+
+        floatingPanel?.contentView = NSHostingView(rootView: content)
+    }
+
     private func setupHotkey() {
         let manager = HotkeyManager {
             Task { @MainActor in
-                viewModel.toggleCapture()
+                self.viewModel.toggleCapture()
             }
         }
         manager.register()
         hotkeyManager = manager
     }
 
-    @MainActor
-    private func teardown() {
-        hotkeyManager?.unregister()
-        floatingPanel?.close()
-        viewModel.stopCapture()
+    private var transcriptWindow: NSWindow?
+
+    private func openTranscriptWindow() {
+        if let existing = transcriptWindow, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "TranslatedCaption"
+        window.contentView = NSHostingView(
+            rootView: MainWindowView()
+                .environment(viewModel)
+        )
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        transcriptWindow = window
     }
 }

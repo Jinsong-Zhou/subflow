@@ -18,10 +18,15 @@ struct MainWindowView: View {
         HStack {
             Button(action: { viewModel.toggleCapture() }) {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(viewModel.isRecording ? .green : .gray)
-                        .frame(width: 8, height: 8)
-                    Text(viewModel.isRecording ? "Recording" : "Start")
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Circle()
+                            .fill(viewModel.isRecording ? .green : .gray)
+                            .frame(width: 8, height: 8)
+                    }
+                    Text(toolbarButtonLabel)
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .padding(.horizontal, 14)
@@ -34,6 +39,14 @@ struct MainWindowView: View {
                 )
             }
             .buttonStyle(.plain)
+            .disabled(viewModel.isLoading)
+
+            if !viewModel.statusMessage.isEmpty {
+                Text(viewModel.statusMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             Spacer()
 
@@ -43,6 +56,12 @@ struct MainWindowView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private var toolbarButtonLabel: String {
+        if viewModel.isLoading { return "Loading..." }
+        if viewModel.isRecording { return "Recording" }
+        return "Start"
     }
 
     private var transcriptList: some View {

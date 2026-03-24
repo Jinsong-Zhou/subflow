@@ -1,3 +1,6 @@
 .superpowers/
 .env*
 TranslatedCaption.xcodeproj/
+build/
+default.profraw
+.claude/

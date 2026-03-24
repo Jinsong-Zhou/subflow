@@ -4,11 +4,15 @@ import ScreenCaptureKit
 final class AudioCaptureService: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var continuation: AsyncStream<[Float]>.Continuation?
+    private var _audioStream: AsyncStream<[Float]>?
 
-    var audioStream: AsyncStream<[Float]> {
-        AsyncStream { continuation in
+    /// Must be accessed BEFORE calling start() to set up the continuation
+    func makeAudioStream() -> AsyncStream<[Float]> {
+        let stream = AsyncStream<[Float]> { continuation in
             self.continuation = continuation
         }
+        _audioStream = stream
+        return stream
     }
 
     func start() async throws {
@@ -21,11 +25,14 @@ final class AudioCaptureService: NSObject, @unchecked Sendable {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
-        config.sampleRate = 16000
         config.channelCount = 1
+        config.sampleRate = 16000
+        config.width = 2
+        config.height = 2
 
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global())
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .global())
         try await stream.startCapture()
         self.stream = stream
     }
@@ -48,6 +55,8 @@ extension AudioCaptureService: SCStreamOutput {
         guard let blockBuffer = sampleBuffer.dataBuffer else { return }
 
         let length = CMBlockBufferGetDataLength(blockBuffer)
+        guard length > 0 else { return }
+
         var data = Data(count: length)
         data.withUnsafeMutableBytes { rawBuffer in
             CMBlockBufferCopyDataBytes(

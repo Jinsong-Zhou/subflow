@@ -25,6 +25,8 @@ targets:
         SWIFT_VERSION: "6.0"
         CODE_SIGN_ENTITLEMENTS: TranslatedCaption/Resources/TranslatedCaption.entitlements
         INFOPLIST_FILE: TranslatedCaption/Resources/Info.plist
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: 6ZWM88SUVJ
     dependencies:
       - package: WhisperKit
     entitlements:
