@@ -16,10 +16,12 @@ struct TranslatedCaptionApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var viewModel = CaptionViewModel()
+    private var settings = CaptionSettings()
     private var floatingPanel: FloatingPanel?
     private var hotkeyManager: HotkeyManager?
     private var popover = NSPopover()
     private var translationWindow: NSWindow?
+    private var settingsWindow: NSWindow?
     private var notificationObserver: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -31,9 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkey()
         setupRemoteControl()
         updateFloatingPanelWithTranslation()
+        observePanelWidth()
 
-        // Pre-load WhisperKit model in background so Start is instant
-        viewModel.preloadModel()
+        viewModel.preloadModel(modelId: settings.selectedModelId)
     }
 
     /// Listen for distributed notification to toggle recording (for testing/automation)
@@ -68,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menuBarView = MenuBarView(
             onToggleCapture: { [weak self] in self?.viewModel.toggleCapture() },
             onOpenTranscript: { [weak self] in self?.openTranscriptWindow() },
+            onOpenSettings: { [weak self] in self?.openSettingsWindow() },
             onQuit: { [weak self] in
                 self?.viewModel.stopCapture()
                 NSApp.terminate(nil)
@@ -75,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         .environment(viewModel)
 
-        popover.contentSize = NSSize(width: 240, height: 180)
+        popover.contentSize = NSSize(width: 240, height: 200)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: menuBarView)
     }
@@ -93,13 +96,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupFloatingPanel() {
+        let width = settings.panelWidth
         let panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 200)
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 200)
         )
 
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
-            let x = screenFrame.midX - 310
+            let x = screenFrame.midX - width / 2
             let y = screenFrame.minY + 60
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         }
@@ -112,11 +116,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let config = viewModel.translationService.configuration
         let content = FloatingCaptionView()
             .environment(viewModel)
+            .environment(settings)
             .translationTask(config) { [weak self] session in
                 self?.viewModel.setTranslationSession(session)
             }
 
         floatingPanel?.contentView = NSHostingView(rootView: content)
+    }
+
+    private func observePanelWidth() {
+        withObservationTracking {
+            let _ = settings.panelWidth
+        } onChange: {
+            Task { @MainActor [weak self] in
+                self?.updatePanelFrame()
+                self?.observePanelWidth()
+            }
+        }
+    }
+
+    private func updatePanelFrame() {
+        guard let panel = floatingPanel, let screen = NSScreen.main else { return }
+        let width = settings.panelWidth
+        let screenFrame = screen.visibleFrame
+        let x = screenFrame.midX - width / 2
+        let y = screenFrame.minY + 60
+        panel.setFrame(
+            NSRect(x: x, y: y, width: width, height: panel.frame.height),
+            display: true,
+            animate: true
+        )
     }
 
     private func setupHotkey() {
@@ -127,6 +156,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         manager.register()
         hotkeyManager = manager
+    }
+
+    private func openSettingsWindow() {
+        popover.performClose(nil)
+
+        if let existing = settingsWindow, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Settings"
+        window.contentView = NSHostingView(
+            rootView: SettingsView()
+                .environment(viewModel)
+                .environment(settings)
+        )
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow = window
     }
 
     private var transcriptWindow: NSWindow?

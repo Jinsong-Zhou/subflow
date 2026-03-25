@@ -10,11 +10,10 @@ final class CaptionViewModel {
     var isModelReady = false
     var statusMessage = ""
 
-    // Streaming state — updates every ~0.3s as audio accumulates
     var streamingEnglish = ""
     var streamingChinese = ""
+    var streamingWords: [WordTimestamp] = []
 
-    // Confirmed captions (finalized after silence or sentence boundary)
     var captionHistory: [CaptionEntry] = []
     var recentCaptions: [CaptionEntry] = []
 
@@ -22,32 +21,58 @@ final class CaptionViewModel {
 
     private let maxRecentCaptions = 2
     private var audioCaptureService: AudioCaptureService?
-    private var transcriptionService: TranscriptionService?
-    private var pipelineTask: Task<Void, Never>?
+    private var moonshineService: MoonshineTranscriptionService?
     private var accumulatorTask: Task<Void, Never>?
-
-    // Shared audio buffer (safe: both tasks run on MainActor)
-    private var audioBuffer: [Float] = []
-    private var consecutiveSilentSamples = 0
 
     // MARK: - Lifecycle
 
-    func preloadModel() {
+    func preloadModel(modelId: String = ASRModel.defaultModel.id) {
         guard !isModelReady, !isLoading else { return }
+        let modelName = ASRModel.available.first { $0.id == modelId }?.name ?? "model"
         isLoading = true
-        statusMessage = "Loading speech model..."
+        statusMessage = "Loading \(modelName)..."
 
         Task {
             do {
-                AppLogger.log("Loading WhisperKit model...")
-                let transcription = try await TranscriptionService.load()
-                self.transcriptionService = transcription
+                AppLogger.log("Loading Moonshine model: \(modelId)")
+                let service = try MoonshineTranscriptionService.load(modelId: modelId)
+                self.moonshineService = service
                 self.isModelReady = true
                 self.statusMessage = ""
-                AppLogger.log("Model loaded successfully")
+                AppLogger.log("Model loaded successfully: \(modelId)")
             } catch {
                 AppLogger.log("Model load failed: \(error.localizedDescription)")
                 self.statusMessage = "Model load failed: \(error.localizedDescription)"
+            }
+            self.isLoading = false
+        }
+    }
+
+    func switchModel(to modelId: String) {
+        guard !isLoading else { return }
+
+        if isRecording {
+            stopCapture()
+        }
+
+        moonshineService?.close()
+        moonshineService = nil
+        isModelReady = false
+        isLoading = true
+        let modelName = ASRModel.available.first { $0.id == modelId }?.name ?? "model"
+        statusMessage = "Loading \(modelName)..."
+
+        Task {
+            do {
+                AppLogger.log("Switching to model: \(modelId)")
+                let service = try MoonshineTranscriptionService.load(modelId: modelId)
+                self.moonshineService = service
+                self.isModelReady = true
+                self.statusMessage = ""
+                AppLogger.log("Model switched successfully: \(modelId)")
+            } catch {
+                AppLogger.log("Model switch failed: \(error.localizedDescription)")
+                self.statusMessage = "Failed: \(error.localizedDescription)"
             }
             self.isLoading = false
         }
@@ -75,6 +100,7 @@ final class CaptionViewModel {
         recentCaptions = []
         streamingEnglish = ""
         streamingChinese = ""
+        streamingWords = []
     }
 
     // MARK: - Capture Control
@@ -97,7 +123,7 @@ final class CaptionViewModel {
             guard isModelReady else { return }
         }
 
-        guard transcriptionService != nil else {
+        guard moonshineService != nil else {
             statusMessage = "Model not available"
             return
         }
@@ -111,8 +137,8 @@ final class CaptionViewModel {
             self.statusMessage = ""
 
             try await audioService.start()
-            AppLogger.log("Audio capture started, running streaming pipeline")
-            runStreamingPipeline(audioStream: audioStream)
+            AppLogger.log("Audio capture started")
+            runPipeline(audioStream: audioStream)
         } catch {
             AppLogger.log("Failed to start capture: \(error.localizedDescription)")
             statusMessage = "Error: \(error.localizedDescription)"
@@ -122,10 +148,10 @@ final class CaptionViewModel {
 
     func stopCapture() {
         isRecording = false
-        pipelineTask?.cancel()
         accumulatorTask?.cancel()
-        pipelineTask = nil
         accumulatorTask = nil
+
+        try? moonshineService?.stopStream()
 
         let service = audioCaptureService
         Task { await service?.stop() }
@@ -136,233 +162,72 @@ final class CaptionViewModel {
         }
         streamingEnglish = ""
         streamingChinese = ""
-        audioBuffer = []
-        consecutiveSilentSamples = 0
+        streamingWords = []
     }
 
-    // MARK: - Text Analysis
+    // MARK: - Moonshine Streaming Pipeline
 
-    private func isSilent(_ samples: [Float], threshold: Float = 0.01) -> Bool {
-        guard !samples.isEmpty else { return true }
-        let rms = sqrt(samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count))
-        return rms < threshold
-    }
+    private func runPipeline(audioStream: AsyncStream<[Float]>) {
+        guard let moonshine = moonshineService else { return }
 
-    /// Strip bracketed hallucination markers like [BLANK_AUDIO], (speaking foreign language)
-    private func cleanTranscription(_ text: String) -> String {
-        var cleaned = text
-        // Remove [anything] patterns
-        cleaned = cleaned.replacingOccurrences(
-            of: "\\[[^\\]]*\\]",
-            with: "",
-            options: .regularExpression
-        )
-        // Remove (audio description) patterns
-        cleaned = cleaned.replacingOccurrences(
-            of: "\\([^)]*(?:audio|language|music|silence|laughter|applause)[^)]*\\)",
-            with: "",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        // Collapse multiple spaces
-        cleaned = cleaned.replacingOccurrences(
-            of: "\\s{2,}",
-            with: " ",
-            options: .regularExpression
-        )
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+        moonshine.onTextChanged = { [weak self] text, words in
+            guard let self else { return }
+            self.streamingEnglish = text
+            self.streamingWords = words
 
-    private func isHallucination(_ text: String) -> Bool {
-        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let hallucinations = [
-            "you", "thank you", "thanks for watching", "bye",
-            "thanks for listening", "see you next time", "subscribe",
-            "...", "",
-        ]
-        return hallucinations.contains(lower) || lower.count < 3
-    }
+            if !words.isEmpty {
+                let wordInfo = words.map { "\($0.word)[\(String(format: "%.2f", $0.start))-\(String(format: "%.2f", $0.end))]" }.joined(separator: " ")
+                AppLogger.log("Streaming words: \(wordInfo)")
+            }
+            AppLogger.log("Streaming EN: \(text)")
 
-    /// Find the last sentence boundary (". " / "? " / "! ") that splits text into
-    /// completed sentences + a remaining fragment. Returns nil if no split point.
-    private func splitAtLastSentenceBoundary(_ text: String) -> (completed: String, remainder: String)? {
-        let sentenceEnders: [(String, Int)] = [
-            (". ", 2), ("? ", 2), ("! ", 2),   // period/question/exclamation + space
-        ]
-        var bestIndex = -1
-        for (ender, len) in sentenceEnders {
-            if let range = text.range(of: ender, options: .backwards) {
-                let idx = text.distance(from: text.startIndex, to: range.lowerBound) + len
-                if idx > bestIndex && idx < text.count {
-                    bestIndex = idx
+            Task {
+                do {
+                    let chinese = try await self.translationService.translate(text)
+                    self.streamingChinese = chinese
+                    AppLogger.log("Streaming ZH: \(chinese)")
+                } catch {
+                    AppLogger.log("Translation error: \(error.localizedDescription)")
                 }
             }
         }
-        guard bestIndex > 3 else { return nil }
 
-        let completed = String(text.prefix(bestIndex)).trimmingCharacters(in: .whitespaces)
-        let remainder = String(text.suffix(text.count - bestIndex)).trimmingCharacters(in: .whitespaces)
+        moonshine.onLineCompleted = { [weak self] text, words in
+            guard let self else { return }
+            AppLogger.log("Completed EN: \(text)")
 
-        // Completed must be a real sentence (not a short residual fragment like "exhaust.")
-        guard completed.count >= 20, !remainder.isEmpty else { return nil }
-        guard !completed.isEmpty, !remainder.isEmpty else { return nil }
-        return (completed, remainder)
-    }
+            if !words.isEmpty {
+                let wordInfo = words.map { "\($0.word)[\(String(format: "%.2f", $0.confidence))]" }.joined(separator: " ")
+                AppLogger.log("Completed words: \(wordInfo)")
+            }
 
-    // MARK: - Streaming Pipeline
+            Task {
+                let chinese = (try? await self.translationService.translate(text)) ?? ""
+                AppLogger.log("Completed ZH: \(chinese)")
+                self.addCaption(english: text, chinese: chinese)
+                self.streamingEnglish = ""
+                self.streamingChinese = ""
+                self.streamingWords = []
+            }
+        }
 
-    private func runStreamingPipeline(audioStream: AsyncStream<[Float]>) {
-        let sampleRate = 16000
+        do {
+            try moonshine.startStream(updateInterval: 0.5)
+        } catch {
+            AppLogger.log("Failed to start Moonshine stream: \(error.localizedDescription)")
+            statusMessage = "Stream error: \(error.localizedDescription)"
+            return
+        }
 
-        // Timing thresholds
-        let silenceForFinalize = Int(1.5 * Double(sampleRate))  // 1.5s silence → commit text
-        let silenceForPurge = sampleRate * 2                     // 2s silence + no text → purge buffer
-        let sentenceSplitThreshold = sampleRate * 4              // 4s → start splitting at sentence boundaries
-        let maxBufferSize = sampleRate * 15                      // 15s absolute safety cap
-
-        // Task 1: Accumulate audio into shared buffer
         accumulatorTask = Task {
             for await samples in audioStream {
                 if Task.isCancelled { break }
-                self.audioBuffer.append(contentsOf: samples)
-
-                if self.isSilent(samples) {
-                    self.consecutiveSilentSamples += samples.count
-                } else {
-                    self.consecutiveSilentSamples = 0
-                }
-            }
-        }
-
-        // Task 2: Adaptive transcription with sentence-aware finalization
-        pipelineTask = Task {
-            guard let transcription = self.transcriptionService else { return }
-            var lastTranscription = ""
-            var lastTranscribeBufferSize = 0
-            let minNewSamples = sampleRate / 4
-
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(200))
-                if Task.isCancelled { break }
-
-                // ── Silence purge: 2s+ silence with no streaming → clear everything ──
-                // Prevents hallucination after long silence periods
-                if self.consecutiveSilentSamples >= silenceForPurge
-                    && self.streamingEnglish.isEmpty
-                {
-                    self.audioBuffer.removeAll()
-                    lastTranscription = ""
-                    lastTranscribeBufferSize = 0
-                    continue
-                }
-
-                // ── Silence finalize: 1.5s silence with active text → commit ──
-                if self.consecutiveSilentSamples >= silenceForFinalize
-                    && !self.streamingEnglish.isEmpty
-                {
-                    await self.finalizeCurrentCaption()
-                    self.audioBuffer.removeAll()  // full clear after silence (no hallucination risk)
-                    self.consecutiveSilentSamples = 0
-                    lastTranscription = ""
-                    lastTranscribeBufferSize = 0
-                    continue
-                }
-
-                // ── Max buffer safety: hard finalize at 15s ──
-                if self.audioBuffer.count >= maxBufferSize && !self.streamingEnglish.isEmpty {
-                    AppLogger.log("Max buffer reached, force finalize")
-                    await self.finalizeCurrentCaption()
-                    // Keep 2s of audio for context continuity
-                    self.audioBuffer = Array(self.audioBuffer.suffix(sampleRate * 2))
-                    self.consecutiveSilentSamples = 0
-                    lastTranscription = ""
-                    lastTranscribeBufferSize = self.audioBuffer.count
-                    continue
-                }
-
-                // ── Skip if not enough new audio ──
-                let newSamples = self.audioBuffer.count - lastTranscribeBufferSize
-                guard newSamples >= minNewSamples else { continue }
-
-                // ── Skip if silent and nothing streaming ──
-                let recentChunk = Array(self.audioBuffer.suffix(sampleRate / 3))
-                if self.isSilent(recentChunk) && self.streamingEnglish.isEmpty { continue }
-
-                // ── Transcribe buffer (cap at 15s to keep inference fast) ──
-                let maxTranscribeSamples = sampleRate * 15
-                let snapshot = self.audioBuffer.count > maxTranscribeSamples
-                    ? Array(self.audioBuffer.suffix(maxTranscribeSamples))
-                    : self.audioBuffer
-                lastTranscribeBufferSize = self.audioBuffer.count
-
                 do {
-                    var english = try await transcription.transcribe(audioBuffer: snapshot)
-
-                    // Clean bracketed hallucination markers
-                    english = self.cleanTranscription(english)
-
-                    guard !self.isHallucination(english) else { continue }
-                    guard english != lastTranscription else { continue }
-
-                    lastTranscription = english
-
-                    // ── Mid-stream sentence split (buffer > 4s) ──
-                    // Commit completed sentences so reader sees stable text
-                    if self.audioBuffer.count >= sentenceSplitThreshold,
-                       let (completed, remainder) = self.splitAtLastSentenceBoundary(english)
-                    {
-                        // Translate and commit completed sentences
-                        let chinese = (try? await self.translationService.translate(completed)) ?? ""
-                        AppLogger.log("Sentence split EN: \(completed)")
-                        AppLogger.log("Sentence split ZH: \(chinese)")
-                        self.addCaption(english: completed, chinese: chinese)
-
-                        // Show remainder as ongoing streaming
-                        self.streamingEnglish = remainder
-                        let remainderZH = (try? await self.translationService.translate(remainder)) ?? ""
-                        self.streamingChinese = remainderZH
-                        AppLogger.log("Streaming EN: \(remainder)")
-                        AppLogger.log("Streaming ZH: \(remainderZH)")
-
-                        // Trim buffer: estimate how much audio the remainder covers
-                        let ratio = max(Double(remainder.count) / Double(english.count), 0.2)
-                        let keepSamples = Int(Double(self.audioBuffer.count) * ratio) + sampleRate
-                        self.audioBuffer = Array(self.audioBuffer.suffix(min(keepSamples, self.audioBuffer.count)))
-                        lastTranscribeBufferSize = self.audioBuffer.count
-                        lastTranscription = ""  // reset: trimmed buffer will produce different text
-                        continue
-                    }
-
-                    // ── Normal streaming update ──
-                    self.streamingEnglish = english
-                    AppLogger.log("Streaming EN: \(english)")
-
-                    do {
-                        let chinese = try await self.translationService.translate(english)
-                        self.streamingChinese = chinese
-                        AppLogger.log("Streaming ZH: \(chinese)")
-                    } catch {
-                        AppLogger.log("Translation error: \(error.localizedDescription)")
-                    }
+                    try moonshine.addAudio(samples, sampleRate: 16000)
                 } catch {
-                    AppLogger.log("Transcription error: \(error.localizedDescription)")
+                    AppLogger.log("Moonshine addAudio error: \(error.localizedDescription)")
                 }
             }
         }
-    }
-
-    private func finalizeCurrentCaption() async {
-        let english = streamingEnglish
-        guard !english.isEmpty else { return }
-
-        var chinese = streamingChinese
-        if chinese.isEmpty {
-            chinese = (try? await translationService.translate(english)) ?? ""
-        }
-
-        AppLogger.log("Finalized: \(english) -> \(chinese)")
-        addCaption(english: english, chinese: chinese)
-
-        streamingEnglish = ""
-        streamingChinese = ""
     }
 }

@@ -7,9 +7,9 @@ options:
   minimumXcodeGenVersion: "2.40.0"
 
 packages:
-  WhisperKit:
-    url: https://github.com/argmaxinc/WhisperKit
-    from: "0.9.0"
+  MoonshineSwift:
+    url: https://github.com/moonshine-ai/moonshine-swift
+    branch: main
 
 targets:
   TranslatedCaption:
@@ -28,7 +28,8 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Development"
         DEVELOPMENT_TEAM: 6ZWM88SUVJ
     dependencies:
-      - package: WhisperKit
+      - package: MoonshineSwift
+        product: MoonshineVoice
     entitlements:
       path: TranslatedCaption/Resources/TranslatedCaption.entitlements
 

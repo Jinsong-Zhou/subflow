@@ -4,6 +4,7 @@ struct MenuBarView: View {
     @Environment(CaptionViewModel.self) private var viewModel
     var onToggleCapture: () -> Void
     var onOpenTranscript: () -> Void
+    var onOpenSettings: () -> Void
     var onQuit: () -> Void
 
     var body: some View {
@@ -30,6 +31,10 @@ struct MenuBarView: View {
             Divider()
 
             Button("Open Transcript", action: onOpenTranscript)
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button("Settings...", action: onOpenSettings)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
