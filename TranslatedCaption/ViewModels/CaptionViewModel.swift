@@ -19,10 +19,12 @@ final class CaptionViewModel {
 
     let translationService = TranslationService()
 
-    private let maxRecentCaptions = 2
+    private let maxRecentCaptions = 3
     private var audioCaptureService: AudioCaptureService?
     private var moonshineService: MoonshineTranscriptionService?
     private var accumulatorTask: Task<Void, Never>?
+    private var completionDisplayTask: Task<Void, Never>?
+    private var cleanupTask: Task<Void, Never>?
 
     // MARK: - Lifecycle
 
@@ -90,9 +92,10 @@ final class CaptionViewModel {
         )
         captionHistory.append(entry)
         recentCaptions.append(entry)
-        if recentCaptions.count > maxRecentCaptions {
+        while recentCaptions.count > maxRecentCaptions {
             recentCaptions.removeFirst()
         }
+        scheduleCleanup()
     }
 
     func clearHistory() {
@@ -101,6 +104,10 @@ final class CaptionViewModel {
         streamingEnglish = ""
         streamingChinese = ""
         streamingWords = []
+        completionDisplayTask?.cancel()
+        completionDisplayTask = nil
+        cleanupTask?.cancel()
+        cleanupTask = nil
     }
 
     // MARK: - Capture Control
@@ -150,6 +157,8 @@ final class CaptionViewModel {
         isRecording = false
         accumulatorTask?.cancel()
         accumulatorTask = nil
+        completionDisplayTask?.cancel()
+        completionDisplayTask = nil
 
         try? moonshineService?.stopStream()
 
@@ -157,8 +166,17 @@ final class CaptionViewModel {
         Task { await service?.stop() }
         audioCaptureService = nil
 
-        if !streamingEnglish.isEmpty {
-            addCaption(english: streamingEnglish, chinese: streamingChinese)
+        let remainingEnglish = streamingEnglish
+        let remainingChinese = streamingChinese
+        if !remainingEnglish.isEmpty {
+            if !remainingChinese.isEmpty {
+                addCaption(english: remainingEnglish, chinese: remainingChinese)
+            } else {
+                Task {
+                    let chinese = (try? await translationService.translate(remainingEnglish)) ?? ""
+                    addCaption(english: remainingEnglish, chinese: chinese)
+                }
+            }
         }
         streamingEnglish = ""
         streamingChinese = ""
@@ -172,24 +190,23 @@ final class CaptionViewModel {
 
         moonshine.onTextChanged = { [weak self] text, words in
             guard let self else { return }
-            self.streamingEnglish = text
-            self.streamingWords = words
 
-            if !words.isEmpty {
-                let wordInfo = words.map { "\($0.word)[\(String(format: "%.2f", $0.start))-\(String(format: "%.2f", $0.end))]" }.joined(separator: " ")
-                AppLogger.log("Streaming words: \(wordInfo)")
-            }
-            AppLogger.log("Streaming EN: \(text)")
-
-            Task {
-                do {
-                    let chinese = try await self.translationService.translate(text)
-                    self.streamingChinese = chinese
-                    AppLogger.log("Streaming ZH: \(chinese)")
-                } catch {
-                    AppLogger.log("Translation error: \(error.localizedDescription)")
+            // Flush completed caption still in display phase to history
+            if self.completionDisplayTask != nil {
+                self.completionDisplayTask?.cancel()
+                self.completionDisplayTask = nil
+                if !self.streamingChinese.isEmpty {
+                    self.addCaption(
+                        english: self.streamingEnglish,
+                        chinese: self.streamingChinese
+                    )
+                    self.streamingChinese = ""
                 }
             }
+
+            self.streamingEnglish = text
+            self.streamingWords = words
+            AppLogger.log("Streaming EN: \(text)")
         }
 
         moonshine.onLineCompleted = { [weak self] text, words in
@@ -204,10 +221,23 @@ final class CaptionViewModel {
             Task {
                 let chinese = (try? await self.translationService.translate(text)) ?? ""
                 AppLogger.log("Completed ZH: \(chinese)")
-                self.addCaption(english: text, chinese: chinese)
-                self.streamingEnglish = ""
-                self.streamingChinese = ""
+
+                // Show completed bilingual caption at full brightness
+                self.streamingEnglish = text
+                self.streamingChinese = chinese
                 self.streamingWords = []
+
+                // After reading time, move to faded history
+                self.completionDisplayTask = Task {
+                    let displayTime = Self.estimateReadingTime(
+                        english: text, chinese: chinese
+                    )
+                    try? await Task.sleep(for: .seconds(displayTime))
+                    guard !Task.isCancelled else { return }
+                    self.addCaption(english: text, chinese: chinese)
+                    self.streamingEnglish = ""
+                    self.streamingChinese = ""
+                }
             }
         }
 
@@ -229,5 +259,38 @@ final class CaptionViewModel {
                 }
             }
         }
+    }
+
+    // MARK: - Display Timing
+
+    private func scheduleCleanup() {
+        cleanupTask?.cancel()
+        cleanupTask = Task {
+            while !recentCaptions.isEmpty {
+                guard let oldest = recentCaptions.first else { break }
+                let readingTime = Self.estimateReadingTime(
+                    english: oldest.englishText,
+                    chinese: oldest.chineseText
+                )
+                let age = Date.now.timeIntervalSince(oldest.timestamp)
+                let remaining = readingTime - age
+
+                if remaining > 0 {
+                    try? await Task.sleep(for: .seconds(remaining))
+                    if Task.isCancelled { break }
+                }
+
+                if !recentCaptions.isEmpty {
+                    recentCaptions.removeFirst()
+                }
+            }
+        }
+    }
+
+    /// Estimate comfortable reading time based on subtitle length.
+    /// ~15 chars/sec for bilingual subtitles, clamped to 3–8 seconds.
+    private static func estimateReadingTime(english: String, chinese: String) -> TimeInterval {
+        let totalChars = Double(english.count + chinese.count)
+        return min(max(totalChars / 15.0, 3.0), 8.0)
     }
 }
