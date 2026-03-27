@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s "/Applications/Xcode_26.2.app"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build and create DMG
+        id: dmg
+        run: bash scripts/create-dmg.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            ## TranslatedCaption ${{ github.ref_name }}
+
+            ### Installation
+            1. Download **TranslatedCaption-*.dmg** below
+            2. Open the DMG and drag the app to `/Applications`
+            3. On first launch: **right-click the app > Open** (or allow in System Settings > Privacy & Security)
+            4. Grant **Screen Recording** permission when prompted
+
+            > This app is not notarized with Apple. macOS will show a security warning on first launch — this is expected for open-source software distributed outside the Mac App Store.
+
+            ### Requirements
+            - macOS 26.0 or later
+          files: ${{ steps.dmg.outputs.DMG_PATH }}
+          draft: false
+          prerelease: false

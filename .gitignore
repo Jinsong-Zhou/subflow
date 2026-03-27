@@ -1,6 +1,21 @@
-.superpowers/
-.env*
+# macOS
+.DS_Store
+
+# Xcode
 TranslatedCaption.xcodeproj/
+*.xcuserdata
+DerivedData/
+
+# Build
 build/
 default.profraw
+
+# Release artifacts
+*.dmg
+
+# Environment
+.env*
+
+# Tools
+.superpowers/
 .claude/
