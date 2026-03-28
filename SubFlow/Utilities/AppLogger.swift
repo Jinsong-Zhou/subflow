@@ -1,13 +1,13 @@
 import Foundation
 
-/// Writes logs to ~/Library/Logs/TranslatedCaption.log for easy debugging.
+/// Writes logs to ~/Library/Logs/SubFlow.log for easy debugging.
 /// Usage: AppLogger.log("message") or AppLogger.log("context", "detail")
 enum AppLogger {
     private static let logURL: URL = {
         let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Logs")
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        return logs.appendingPathComponent("TranslatedCaption.log")
+        return logs.appendingPathComponent("SubFlow.log")
     }()
 
     private static let formatter: DateFormatter = {

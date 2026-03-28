@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # === Configuration ===
-APP_NAME="TranslatedCaption"
-SCHEME="TranslatedCaption"
+APP_NAME="SubFlow"
+SCHEME="SubFlow"
 CONFIGURATION="Release"
 DERIVED_DATA="build/DerivedData"
 DMG_DIR="build/dmg"

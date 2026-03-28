@@ -1,6 +1,6 @@
 import Testing
 import AppKit
-@testable import TranslatedCaption
+@testable import SubFlow
 
 @Test @MainActor func floatingPanelIsTransparent() {
     let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200))

@@ -8,6 +8,6 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>TranslatedCaption needs screen recording permission to capture system audio for real-time transcription.</string>
+    <string>SubFlow needs screen recording permission to capture system audio for real-time transcription.</string>
 </dict>
 </plist>

@@ -24,7 +24,7 @@ final class MoonshineTranscriptionService: @unchecked Sendable {
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!
         let modelPath = appSupport
-            .appendingPathComponent("TranslatedCaption/MoonshineModels/\(modelId)")
+            .appendingPathComponent("SubFlow/MoonshineModels/\(modelId)")
             .path
 
         let modelArch: ModelArch

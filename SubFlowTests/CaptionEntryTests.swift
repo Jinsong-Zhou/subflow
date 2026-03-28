@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import TranslatedCaption
+@testable import SubFlow
 
 @Test func captionEntryHasUniqueId() {
     let a = CaptionEntry(timestamp: .now, englishText: "Hello", chineseText: "你好")

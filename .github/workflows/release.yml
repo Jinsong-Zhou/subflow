@@ -33,10 +33,10 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body: |
-            ## TranslatedCaption ${{ github.ref_name }}
+            ## SubFlow ${{ github.ref_name }}
 
             ### Installation
-            1. Download **TranslatedCaption-*.dmg** below
+            1. Download **SubFlow-*.dmg** below
             2. Open the DMG and drag the app to `/Applications`
             3. On first launch: **right-click the app > Open** (or allow in System Settings > Privacy & Security)
             4. Grant **Screen Recording** permission when prompted

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import TranslatedCaption
+@testable import SubFlow
 
 @Test func translationServiceThrowsWithoutSession() async {
     let service = TranslationService()
