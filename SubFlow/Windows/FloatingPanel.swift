@@ -4,7 +4,7 @@ final class FloatingPanel: NSPanel {
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .fullSizeContentView, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -15,5 +15,6 @@ final class FloatingPanel: NSPanel {
         isMovableByWindowBackground = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hidesOnDeactivate = false
+        minSize = NSSize(width: 300, height: 80)
     }
 }

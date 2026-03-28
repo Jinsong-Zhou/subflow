@@ -10,7 +10,9 @@ final class CaptionViewModel {
     var isModelReady = false
     var statusMessage = ""
 
+    /// Current streaming English (live preview while speaker talks)
     var streamingEnglish = ""
+    /// Current completed Chinese translation (appears when sentence finishes)
     var streamingChinese = ""
     var streamingWords: [WordTimestamp] = []
 
@@ -19,12 +21,15 @@ final class CaptionViewModel {
 
     let translationService = TranslationService()
 
-    private let maxRecentCaptions = 3
+    private let maxRecentCaptions = 2
     private var audioCaptureService: AudioCaptureService?
     private var moonshineService: MoonshineTranscriptionService?
     private var accumulatorTask: Task<Void, Never>?
     private var completionDisplayTask: Task<Void, Never>?
     private var cleanupTask: Task<Void, Never>?
+    /// Increments on every onTextChanged. Used to detect if new streaming
+    /// started while a translation was in-flight.
+    private var streamingGeneration = 0
 
     // MARK: - Lifecycle
 
@@ -166,6 +171,7 @@ final class CaptionViewModel {
         Task { await service?.stop() }
         audioCaptureService = nil
 
+        // Save any remaining streaming text before clearing
         let remainingEnglish = streamingEnglish
         let remainingChinese = streamingChinese
         if !remainingEnglish.isEmpty {
@@ -184,6 +190,11 @@ final class CaptionViewModel {
     }
 
     // MARK: - Moonshine Streaming Pipeline
+    //
+    // YouTube-style logic:
+    //   onTextChanged  → show English live preview (no Chinese)
+    //   onLineCompleted → translate → show complete EN + ZH pair
+    //   Next sentence arrives → old pair moves to history
 
     private func runPipeline(audioStream: AsyncStream<[Float]>) {
         guard let moonshine = moonshineService else { return }
@@ -191,7 +202,11 @@ final class CaptionViewModel {
         moonshine.onTextChanged = { [weak self] text, words in
             guard let self else { return }
 
-            // Flush completed caption still in display phase to history
+            // Bump generation — any in-flight translation older than this
+            // must go to history, not overwrite the display.
+            self.streamingGeneration += 1
+
+            // If a completed caption is being displayed, flush it to history
             if self.completionDisplayTask != nil {
                 self.completionDisplayTask?.cancel()
                 self.completionDisplayTask = nil
@@ -200,34 +215,38 @@ final class CaptionViewModel {
                         english: self.streamingEnglish,
                         chinese: self.streamingChinese
                     )
-                    self.streamingChinese = ""
                 }
             }
 
+            // Show live English preview — no Chinese until sentence completes
             self.streamingEnglish = text
+            self.streamingChinese = ""
             self.streamingWords = words
-            AppLogger.log("Streaming EN: \(text)")
         }
 
         moonshine.onLineCompleted = { [weak self] text, words in
             guard let self else { return }
             AppLogger.log("Completed EN: \(text)")
 
-            if !words.isEmpty {
-                let wordInfo = words.map { "\($0.word)[\(String(format: "%.2f", $0.confidence))]" }.joined(separator: " ")
-                AppLogger.log("Completed words: \(wordInfo)")
-            }
+            // Snapshot the generation BEFORE awaiting translation.
+            let genAtCompletion = self.streamingGeneration
 
             Task {
                 let chinese = (try? await self.translationService.translate(text)) ?? ""
                 AppLogger.log("Completed ZH: \(chinese)")
 
-                // Show completed bilingual caption at full brightness
+                // If generation changed, new streaming started while we were
+                // translating → send this to history, don't touch the display.
+                guard self.streamingGeneration == genAtCompletion else {
+                    self.addCaption(english: text, chinese: chinese)
+                    return
+                }
+
+                // No new streaming — safe to show the completed pair
                 self.streamingEnglish = text
                 self.streamingChinese = chinese
                 self.streamingWords = []
 
-                // After reading time, move to faded history
                 self.completionDisplayTask = Task {
                     let displayTime = Self.estimateReadingTime(
                         english: text, chinese: chinese
@@ -287,10 +306,17 @@ final class CaptionViewModel {
         }
     }
 
-    /// Estimate comfortable reading time based on subtitle length.
-    /// ~15 chars/sec for bilingual subtitles, clamped to 3–8 seconds.
-    private static func estimateReadingTime(english: String, chinese: String) -> TimeInterval {
-        let totalChars = Double(english.count + chinese.count)
-        return min(max(totalChars / 15.0, 3.0), 8.0)
+    /// Estimate comfortable reading time for bilingual subtitles.
+    ///
+    /// - English: ~15 chars/sec (professional subtitle standard)
+    /// - Chinese: ~8 chars/sec (each character carries more meaning)
+    /// - Bilingual overhead: 1.3x (eye movement between two lines)
+    /// - Clamped to 2.5–10 seconds
+    nonisolated static func estimateReadingTime(english: String, chinese: String) -> TimeInterval {
+        let englishTime = Double(english.count) / 15.0
+        let chineseTime = Double(chinese.count) / 8.0
+        let baseTime = max(englishTime, chineseTime)
+        let bilingualTime = baseTime * 1.3
+        return min(max(bilingualTime, 2.5), 10.0)
     }
 }

@@ -15,15 +15,17 @@ import Foundation
 
     // History should have all 3
     #expect(vm.captionHistory.count == 3)
-    // Recent should have all 3 (limit is 3)
-    #expect(vm.recentCaptions.count == 3)
+    // Recent keeps 2 most recent
+    #expect(vm.recentCaptions.count == 2)
+    #expect(vm.recentCaptions[0].englishText == "Today we will discuss AI")
+    #expect(vm.recentCaptions[1].englishText == "Let's begin")
 
-    // Add a 4th, recent should drop oldest
+    // Add a 4th, recent drops oldest to stay at 2
     vm.addCaption(english: "First topic", chinese: "第一个话题")
     #expect(vm.captionHistory.count == 4)
-    #expect(vm.recentCaptions.count == 3)
-    #expect(vm.recentCaptions[0].englishText == "Today we will discuss AI")
-    #expect(vm.recentCaptions[2].englishText == "First topic")
+    #expect(vm.recentCaptions.count == 2)
+    #expect(vm.recentCaptions[0].englishText == "Let's begin")
+    #expect(vm.recentCaptions[1].englishText == "First topic")
 
     // Clear resets everything
     vm.clearHistory()

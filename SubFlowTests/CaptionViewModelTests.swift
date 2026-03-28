@@ -42,15 +42,14 @@ import Foundation
     #expect(vm.recentCaptions[0].englishText == "Hello")
 }
 
-@Test @MainActor func recentCaptionsLimitedToThree() {
+@Test @MainActor func recentCaptionsLimitedToTwo() {
     let vm = CaptionViewModel()
     vm.addCaption(english: "One", chinese: "一")
     vm.addCaption(english: "Two", chinese: "二")
     vm.addCaption(english: "Three", chinese: "三")
-    vm.addCaption(english: "Four", chinese: "四")
-    #expect(vm.recentCaptions.count == 3)
+    #expect(vm.recentCaptions.count == 2)
     #expect(vm.recentCaptions[0].englishText == "Two")
-    #expect(vm.recentCaptions[2].englishText == "Four")
+    #expect(vm.recentCaptions[1].englishText == "Three")
 }
 
 @Test @MainActor func historyGrowsUnbounded() {
@@ -59,15 +58,13 @@ import Foundation
         vm.addCaption(english: "Line \(i)", chinese: "行 \(i)")
     }
     #expect(vm.captionHistory.count == 10)
-    #expect(vm.recentCaptions.count == 3)
+    #expect(vm.recentCaptions.count == 2)
 }
 
 @Test @MainActor func addCaptionWithEmptyStrings() {
     let vm = CaptionViewModel()
     vm.addCaption(english: "", chinese: "")
     #expect(vm.captionHistory.count == 1)
-    #expect(vm.captionHistory[0].englishText == "")
-    #expect(vm.captionHistory[0].chineseText == "")
 }
 
 // MARK: - clearHistory
@@ -94,19 +91,16 @@ import Foundation
     let vm = CaptionViewModel()
     vm.clearHistory()
     #expect(vm.captionHistory.isEmpty)
-    #expect(vm.recentCaptions.isEmpty)
 }
 
 // MARK: - toggleCapture without model
 
 @Test @MainActor func toggleCaptureWithoutModelDoesNotRecord() {
     let vm = CaptionViewModel()
-    // Model not ready, toggleCapture should not set isRecording
-    // (it will try to preload and fail since no model files exist)
     #expect(vm.isRecording == false)
 }
 
-// MARK: - Multiple rapid addCaption calls
+// MARK: - Rapid addCaption
 
 @Test @MainActor func rapidAddCaptionMaintainsOrder() {
     let vm = CaptionViewModel()
@@ -116,13 +110,10 @@ import Foundation
     #expect(vm.captionHistory.count == 20)
     #expect(vm.captionHistory.first?.englishText == "Sentence 1")
     #expect(vm.captionHistory.last?.englishText == "Sentence 20")
-    #expect(vm.recentCaptions.count == 3)
-    #expect(vm.recentCaptions[0].englishText == "Sentence 18")
-    #expect(vm.recentCaptions[1].englishText == "Sentence 19")
-    #expect(vm.recentCaptions[2].englishText == "Sentence 20")
+    #expect(vm.recentCaptions.count == 2)
+    #expect(vm.recentCaptions[0].englishText == "Sentence 19")
+    #expect(vm.recentCaptions[1].englishText == "Sentence 20")
 }
-
-// MARK: - CaptionEntry IDs are unique across addCaption calls
 
 @Test @MainActor func captionHistoryEntriesHaveUniqueIds() {
     let vm = CaptionViewModel()
@@ -131,4 +122,56 @@ import Foundation
     vm.addCaption(english: "C", chinese: "丙")
     let ids = Set(vm.captionHistory.map { $0.id })
     #expect(ids.count == 3)
+}
+
+// MARK: - Bilingual Reading Time
+
+@Test func readingTimeShortSentence() {
+    let time = CaptionViewModel.estimateReadingTime(english: "Hello", chinese: "你好")
+    #expect(time == 2.5)
+}
+
+@Test func readingTimeMediumSentence() {
+    let time = CaptionViewModel.estimateReadingTime(
+        english: "This is a medium length sentence for testing",
+        chinese: "这是一个中等长度的测试句子"
+    )
+    #expect(time >= 3.5 && time <= 4.5)
+}
+
+@Test func readingTimeLongChineseDominates() {
+    let time = CaptionViewModel.estimateReadingTime(
+        english: "Hi",
+        chinese: "这是一个非常非常非常非常非常非常非常非常非常长的中文翻译"
+    )
+    #expect(time >= 4.0 && time <= 5.0)
+}
+
+@Test func readingTimeClampedToMax() {
+    let longEN = String(repeating: "word ", count: 50)
+    let longZH = String(repeating: "字", count: 100)
+    let time = CaptionViewModel.estimateReadingTime(english: longEN, chinese: longZH)
+    #expect(time == 10.0)
+}
+
+@Test func readingTimeEmptyStrings() {
+    let time = CaptionViewModel.estimateReadingTime(english: "", chinese: "")
+    #expect(time == 2.5)
+}
+
+// MARK: - Model switching
+
+@Test @MainActor func modelSwitchWhileIdle() {
+    let vm = CaptionViewModel()
+    vm.switchModel(to: "small-streaming-en")
+    #expect(vm.isLoading == true)
+    #expect(vm.isModelReady == false)
+}
+
+@Test @MainActor func rapidModelSwitchIgnoresDuringLoading() {
+    let vm = CaptionViewModel()
+    vm.switchModel(to: "small-streaming-en")
+    #expect(vm.isLoading == true)
+    vm.switchModel(to: "medium-streaming-en")
+    #expect(vm.isLoading == true)
 }

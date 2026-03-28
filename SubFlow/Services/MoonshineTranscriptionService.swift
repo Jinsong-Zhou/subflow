@@ -23,9 +23,26 @@ final class MoonshineTranscriptionService: @unchecked Sendable {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!
-        let modelPath = appSupport
-            .appendingPathComponent("SubFlow/MoonshineModels/\(modelId)")
-            .path
+
+        let newDir = appSupport.appendingPathComponent("SubFlow/MoonshineModels")
+        let oldDir = appSupport.appendingPathComponent("TranslatedCaption/MoonshineModels")
+
+        // Migrate models from legacy TranslatedCaption path if needed
+        if !FileManager.default.fileExists(atPath: newDir.path),
+           FileManager.default.fileExists(atPath: oldDir.path) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: newDir.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try FileManager.default.moveItem(at: oldDir, to: newDir)
+                AppLogger.log("Migrated models from TranslatedCaption to SubFlow")
+            } catch {
+                AppLogger.log("Model migration failed: \(error.localizedDescription)")
+            }
+        }
+
+        let modelPath = newDir.appendingPathComponent(modelId).path
 
         let modelArch: ModelArch
         switch modelId {
