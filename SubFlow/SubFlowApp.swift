@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover = NSPopover()
     private var translationWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var downloadProgressWindow: NSWindow?
     private var notificationObserver: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -34,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupRemoteControl()
         updateFloatingPanelWithTranslation()
         observePanelWidth()
+        observeDownloadProgress()
 
         viewModel.preloadModel(modelId: settings.selectedModelId)
     }
@@ -122,6 +124,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         floatingPanel?.contentView = NSHostingView(rootView: content)
+    }
+
+    /// Show / hide the download progress window whenever `downloadProgress` transitions
+    /// between nil and non-nil.
+    private func observeDownloadProgress() {
+        withObservationTracking {
+            _ = viewModel.downloadProgress
+        } onChange: {
+            Task { @MainActor [weak self] in
+                self?.updateDownloadProgressWindow()
+                self?.observeDownloadProgress()
+            }
+        }
+    }
+
+    private func updateDownloadProgressWindow() {
+        let isActive = viewModel.downloadProgress != nil
+        if isActive, downloadProgressWindow == nil {
+            let modelName = ASRModel.available
+                .first { $0.id == settings.selectedModelId }?.name ?? "Moonshine model"
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 380, height: 220),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "SubFlow — First-time Setup"
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+            window.contentView = NSHostingView(
+                rootView: ModelDownloadProgressView(modelName: modelName)
+                    .environment(viewModel)
+            )
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            downloadProgressWindow = window
+        } else if !isActive, let window = downloadProgressWindow {
+            window.close()
+            downloadProgressWindow = nil
+        }
     }
 
     private func observePanelWidth() {

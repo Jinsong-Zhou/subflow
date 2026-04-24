@@ -9,6 +9,9 @@ final class CaptionViewModel {
     var isLoading = false
     var isModelReady = false
     var statusMessage = ""
+    /// In-flight model download progress in `[0, 1]`. `nil` when no download is
+    /// running (either already on disk or not yet started).
+    var downloadProgress: Double?
 
     /// Current streaming English (live preview while speaker talks)
     var streamingEnglish = ""
@@ -38,18 +41,31 @@ final class CaptionViewModel {
         let modelName = ASRModel.available.first { $0.id == modelId }?.name ?? "model"
         isLoading = true
         statusMessage = "Loading \(modelName)..."
+        downloadProgress = nil
 
         Task {
             do {
                 AppLogger.log("Loading Moonshine model: \(modelId)")
-                let service = try MoonshineTranscriptionService.load(modelId: modelId)
+                let service = try await MoonshineTranscriptionService.load(
+                    modelId: modelId,
+                    onDownloadProgress: { [weak self] p in
+                        Task { @MainActor [weak self] in
+                            self?.downloadProgress = p
+                            if let self, self.statusMessage.hasPrefix("Downloading") == false {
+                                self.statusMessage = "Downloading \(modelName)..."
+                            }
+                        }
+                    }
+                )
                 self.moonshineService = service
                 self.isModelReady = true
                 self.statusMessage = ""
+                self.downloadProgress = nil
                 AppLogger.log("Model loaded successfully: \(modelId)")
             } catch {
                 AppLogger.log("Model load failed: \(error.localizedDescription)")
                 self.statusMessage = "Model load failed: \(error.localizedDescription)"
+                self.downloadProgress = nil
             }
             self.isLoading = false
         }
@@ -72,14 +88,26 @@ final class CaptionViewModel {
         Task {
             do {
                 AppLogger.log("Switching to model: \(modelId)")
-                let service = try MoonshineTranscriptionService.load(modelId: modelId)
+                let service = try await MoonshineTranscriptionService.load(
+                    modelId: modelId,
+                    onDownloadProgress: { [weak self] p in
+                        Task { @MainActor [weak self] in
+                            self?.downloadProgress = p
+                            if let self, self.statusMessage.hasPrefix("Downloading") == false {
+                                self.statusMessage = "Downloading \(modelName)..."
+                            }
+                        }
+                    }
+                )
                 self.moonshineService = service
                 self.isModelReady = true
                 self.statusMessage = ""
+                self.downloadProgress = nil
                 AppLogger.log("Model switched successfully: \(modelId)")
             } catch {
                 AppLogger.log("Model switch failed: \(error.localizedDescription)")
                 self.statusMessage = "Failed: \(error.localizedDescription)"
+                self.downloadProgress = nil
             }
             self.isLoading = false
         }

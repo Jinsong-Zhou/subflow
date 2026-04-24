@@ -17,32 +17,20 @@ final class MoonshineTranscriptionService: @unchecked Sendable {
 
     private init() {}
 
-    static func load(modelId: String) throws -> MoonshineTranscriptionService {
-        let service = MoonshineTranscriptionService()
-
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!
-
-        let newDir = appSupport.appendingPathComponent("SubFlow/MoonshineModels")
-        let oldDir = appSupport.appendingPathComponent("TranslatedCaption/MoonshineModels")
-
-        // Migrate models from legacy TranslatedCaption path if needed
-        if !FileManager.default.fileExists(atPath: newDir.path),
-           FileManager.default.fileExists(atPath: oldDir.path) {
-            do {
-                try FileManager.default.createDirectory(
-                    at: newDir.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try FileManager.default.moveItem(at: oldDir, to: newDir)
-                AppLogger.log("Migrated models from TranslatedCaption to SubFlow")
-            } catch {
-                AppLogger.log("Model migration failed: \(error.localizedDescription)")
-            }
-        }
-
-        let modelPath = newDir.appendingPathComponent(modelId).path
+    /// Ensures the model is on disk (downloading if necessary) and returns a
+    /// loaded transcription service.
+    ///
+    /// - Parameters:
+    ///   - modelId: e.g. `"small-streaming-en"` or `"medium-streaming-en"`.
+    ///   - onDownloadProgress: Called with `[0.0, 1.0]` during any required
+    ///     download. Not called when the model is already cached.
+    static func load(
+        modelId: String,
+        onDownloadProgress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) async throws -> MoonshineTranscriptionService {
+        let modelDir = try await ModelDownloader.ensureModel(
+            modelId, onProgress: onDownloadProgress
+        )
 
         let modelArch: ModelArch
         switch modelId {
@@ -52,10 +40,10 @@ final class MoonshineTranscriptionService: @unchecked Sendable {
         }
 
         let options = [TranscriberOption(name: "word_timestamps", value: "true")]
-
-        AppLogger.log("Loading Moonshine model: \(modelId) at \(modelPath)")
+        AppLogger.log("Loading Moonshine model: \(modelId) at \(modelDir.path)")
+        let service = MoonshineTranscriptionService()
         service.transcriber = try Transcriber(
-            modelPath: modelPath,
+            modelPath: modelDir.path,
             modelArch: modelArch,
             options: options
         )
