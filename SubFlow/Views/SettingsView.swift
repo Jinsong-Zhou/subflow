@@ -58,9 +58,25 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
             }
+
+            Section("Translation Language") {
+                Picker("Chinese variant", selection: $settings.translationTarget) {
+                    ForEach(TranslationTarget.allCases) { target in
+                        Text(target.displayName).tag(target)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .disabled(viewModel.isRecording)
+
+                if viewModel.isRecording {
+                    Text("Stop recording before switching languages")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 320)
+        .frame(width: 450, height: 420)
         .onChange(of: settings.selectedModelId) { _, newModelId in
             guard !viewModel.isRecording, !viewModel.isLoading else { return }
             viewModel.switchModel(to: newModelId)

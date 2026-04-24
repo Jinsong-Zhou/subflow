@@ -1,5 +1,22 @@
 import Foundation
 
+/// BCP-47 targets that the Apple Translation framework understands for
+/// English → Chinese. The raw value is what gets written to UserDefaults and
+/// passed to `Locale.Language(identifier:)`, so it must round-trip cleanly.
+enum TranslationTarget: String, CaseIterable, Identifiable {
+    case simplifiedChinese = "zh-Hans"
+    case traditionalChineseTaiwan = "zh-Hant-TW"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .simplifiedChinese: return "简体中文"
+        case .traditionalChineseTaiwan: return "繁體中文（台灣）"
+        }
+    }
+}
+
 struct ASRModel: Identifiable, Hashable {
     let id: String
     let name: String
@@ -42,6 +59,12 @@ final class CaptionSettings {
         didSet { UserDefaults.standard.set(selectedModelId, forKey: "selectedModelId") }
     }
 
+    var translationTarget: TranslationTarget {
+        didSet {
+            UserDefaults.standard.set(translationTarget.rawValue, forKey: "translationTarget")
+        }
+    }
+
     var selectedModel: ASRModel {
         ASRModel.available.first { $0.id == selectedModelId } ?? ASRModel.defaultModel
     }
@@ -61,5 +84,9 @@ final class CaptionSettings {
         } else {
             selectedModelId = ASRModel.defaultModel.id
         }
+
+        let savedTarget = defaults.string(forKey: "translationTarget")
+            .flatMap(TranslationTarget.init(rawValue:))
+        translationTarget = savedTarget ?? .simplifiedChinese
     }
 }

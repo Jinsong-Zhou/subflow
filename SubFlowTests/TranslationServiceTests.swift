@@ -13,10 +13,19 @@ import Foundation
     }
 }
 
-@Test func translationServiceConfigurationIsEnglishToChinese() {
+@Test func translationServiceConfigurationSimplifiedChinese() {
     let service = TranslationService()
-    let config = service.configuration
+    let config = service.configuration(target: .simplifiedChinese)
     #expect(config.source?.languageCode?.identifier == "en")
     #expect(config.target?.languageCode?.identifier == "zh")
     #expect(config.target?.script?.identifier == "Hans")
+}
+
+@Test func translationServiceConfigurationTraditionalChineseTaiwan() {
+    let service = TranslationService()
+    let config = service.configuration(target: .traditionalChineseTaiwan)
+    #expect(config.source?.languageCode?.identifier == "en")
+    #expect(config.target?.languageCode?.identifier == "zh")
+    #expect(config.target?.script?.identifier == "Hant")
+    #expect(config.target?.region?.identifier == "TW")
 }

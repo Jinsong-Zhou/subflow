@@ -134,7 +134,7 @@ import AppKit
 
 @Test func translationServiceLanguagePairEndToEnd() {
     let service = TranslationService()
-    let config = service.configuration
+    let config = service.configuration(target: .simplifiedChinese)
     #expect(config.source?.languageCode?.identifier == "en")
     #expect(config.target?.languageCode?.identifier == "zh")
     #expect(config.target?.script?.identifier == "Hans")
