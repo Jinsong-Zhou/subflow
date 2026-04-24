@@ -12,6 +12,10 @@ final class CaptionViewModel {
     /// In-flight model download progress in `[0, 1]`. `nil` when no download is
     /// running (either already on disk or not yet started).
     var downloadProgress: Double?
+    /// Last user-facing model-loading error. The download progress window keeps
+    /// itself on screen until this is cleared so the error is never silently
+    /// swallowed by window auto-dismiss.
+    var downloadError: String?
 
     /// Current streaming English (live preview while speaker talks)
     var streamingEnglish = ""
@@ -42,6 +46,7 @@ final class CaptionViewModel {
         isLoading = true
         statusMessage = "Loading \(modelName)..."
         downloadProgress = nil
+        downloadError = nil
 
         Task {
             do {
@@ -61,14 +66,26 @@ final class CaptionViewModel {
                 self.isModelReady = true
                 self.statusMessage = ""
                 self.downloadProgress = nil
+                self.downloadError = nil
                 AppLogger.log("Model loaded successfully: \(modelId)")
             } catch {
                 AppLogger.log("Model load failed: \(error.localizedDescription)")
-                self.statusMessage = "Model load failed: \(error.localizedDescription)"
+                let message = "Model load failed: \(error.localizedDescription)"
+                self.statusMessage = message
+                // Set error BEFORE clearing progress so the progress window
+                // observer sees (downloadError != nil) and keeps the window up
+                // with an error state for the user to dismiss.
+                self.downloadError = message
                 self.downloadProgress = nil
             }
             self.isLoading = false
         }
+    }
+
+    /// Dismiss the last `downloadError`, e.g. after the user clicks the
+    /// "Dismiss" button in `ModelDownloadProgressView`.
+    func clearDownloadError() {
+        downloadError = nil
     }
 
     func switchModel(to modelId: String) {
@@ -84,6 +101,8 @@ final class CaptionViewModel {
         isLoading = true
         let modelName = ASRModel.available.first { $0.id == modelId }?.name ?? "model"
         statusMessage = "Loading \(modelName)..."
+        downloadProgress = nil
+        downloadError = nil
 
         Task {
             do {
@@ -103,10 +122,13 @@ final class CaptionViewModel {
                 self.isModelReady = true
                 self.statusMessage = ""
                 self.downloadProgress = nil
+                self.downloadError = nil
                 AppLogger.log("Model switched successfully: \(modelId)")
             } catch {
                 AppLogger.log("Model switch failed: \(error.localizedDescription)")
-                self.statusMessage = "Failed: \(error.localizedDescription)"
+                let message = "Failed: \(error.localizedDescription)"
+                self.statusMessage = message
+                self.downloadError = message
                 self.downloadProgress = nil
             }
             self.isLoading = false

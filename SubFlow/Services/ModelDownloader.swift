@@ -116,8 +116,15 @@ enum ModelDownloader {
         try? FileManager.default.removeItem(at: tempZip)
 
         let delegate = ProgressDelegate(onProgress: onProgress)
+        // Explicit timeouts: the system default for `timeoutIntervalForResource`
+        // is seven days — a stalled connection would leave the progress window
+        // frozen for a week. Ten minutes is generous for ~450 MB on a sane link.
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 600
+        config.waitsForConnectivity = true
         let session = URLSession(
-            configuration: .default, delegate: delegate, delegateQueue: nil
+            configuration: config, delegate: delegate, delegateQueue: nil
         )
         defer { session.invalidateAndCancel() }
 
@@ -129,7 +136,7 @@ enum ModelDownloader {
         try FileManager.default.moveItem(at: downloadedURL, to: tempZip)
 
         if let expected = source.expectedSHA256 {
-            let actual = try sha256Hex(of: tempZip)
+            let actual = try await sha256Hex(of: tempZip)
             guard actual.lowercased() == expected.lowercased() else {
                 try? FileManager.default.removeItem(at: tempZip)
                 throw ModelDownloadError.integrityFailed(
@@ -144,7 +151,7 @@ enum ModelDownloader {
         try FileManager.default.createDirectory(
             at: stagingDir, withIntermediateDirectories: true
         )
-        try extractZip(at: tempZip, to: stagingDir)
+        try await extractZip(at: tempZip, to: stagingDir)
 
         let extracted = try locateModelRoot(in: stagingDir, modelId: modelId)
 
@@ -216,33 +223,44 @@ enum ModelDownloader {
         )
     }
 
-    private static func extractZip(at zip: URL, to dest: URL) throws {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        proc.arguments = ["-q", "-o", zip.path, "-d", dest.path]
-        let err = Pipe()
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            throw ModelDownloadError.extractionFailed(error.localizedDescription)
-        }
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else {
-            let stderr = String(
-                data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-            ) ?? ""
-            throw ModelDownloadError.extractionFailed(
-                "unzip exit \(proc.terminationStatus): \(stderr)"
-            )
-        }
+    /// Runs `/usr/bin/unzip` on a detached task so `Process.waitUntilExit()`
+    /// cannot block whichever executor `ensureModel` happens to be suspended on.
+    /// Unzipping a 300 MB archive takes tens of seconds on a typical Mac — more
+    /// than enough to freeze the UI if this ran on the main actor.
+    private static func extractZip(at zip: URL, to dest: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            proc.arguments = ["-q", "-o", zip.path, "-d", dest.path]
+            let err = Pipe()
+            proc.standardError = err
+            do {
+                try proc.run()
+            } catch {
+                throw ModelDownloadError.extractionFailed(error.localizedDescription)
+            }
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                let stderr = String(
+                    data: err.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                ) ?? ""
+                throw ModelDownloadError.extractionFailed(
+                    "unzip exit \(proc.terminationStatus): \(stderr)"
+                )
+            }
+        }.value
     }
 
-    private static func sha256Hex(of file: URL) throws -> String {
-        let data = try Data(contentsOf: file, options: .mappedIfSafe)
-        return SHA256.hash(data: data)
-            .map { String(format: "%02x", $0) }
-            .joined()
+    /// Same rationale as `extractZip`: `Data(contentsOf:)` + `SHA256.hash` reads
+    /// and hashes up to ~300 MB synchronously. Run on a detached task.
+    private static func sha256Hex(of file: URL) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            let data = try Data(contentsOf: file, options: .mappedIfSafe)
+            return SHA256.hash(data: data)
+                .map { String(format: "%02x", $0) }
+                .joined()
+        }.value
     }
 }
 

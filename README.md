@@ -128,7 +128,7 @@ open "$APP_PATH/SubFlow.app"
 
 **First launch requirements:**
 1. Grant **Screen Recording** permission when prompted (System Settings > Privacy & Security > Screen Recording)
-2. The ASR model zip (~157 MB Small / ~303 MB Medium) downloads automatically from this repo's `models-v1` GitHub Release on first recording start, via `ModelDownloader`. A progress window appears during the one-time download, then the file is cached under `~/Library/Application Support/SubFlow/MoonshineModels/<model-id>/` for all subsequent launches.
+2. The ASR model zip (~157 MB Small / ~303 MB Medium) downloads automatically from this repo's `models-v1` GitHub Release on first recording start, via `ModelDownloader`. A progress window appears during the one-time download, then the file is cached under `~/Library/Application Support/SubFlow/MoonshineModels/<model-id>/` for all subsequent launches. **Note for contributors building from a fresh clone:** the model assets at that release tag are published by maintainers via `scripts/upload-models.sh` (see Step 8). If the release has no assets yet, first launch will show a download error — run the script once to publish them.
 3. May need to restart the app after granting Screen Recording permission
 
 ### Step 6: Remote Control (for Automation)

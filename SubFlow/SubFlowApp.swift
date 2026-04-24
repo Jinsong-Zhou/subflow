@@ -126,11 +126,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         floatingPanel?.contentView = NSHostingView(rootView: content)
     }
 
-    /// Show / hide the download progress window whenever `downloadProgress` transitions
-    /// between nil and non-nil.
+    /// Show / hide the download progress window whenever `downloadProgress` or
+    /// `downloadError` transitions between nil and non-nil. Keeping the window
+    /// up while `downloadError != nil` is what prevents a failed download from
+    /// silently dismissing its own UI — the old bug dressed in new clothes.
     private func observeDownloadProgress() {
         withObservationTracking {
             _ = viewModel.downloadProgress
+            _ = viewModel.downloadError
         } onChange: {
             Task { @MainActor [weak self] in
                 self?.updateDownloadProgressWindow()
@@ -141,6 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateDownloadProgressWindow() {
         let isActive = viewModel.downloadProgress != nil
+            || viewModel.downloadError != nil
         if isActive, downloadProgressWindow == nil {
             let modelName = ASRModel.available
                 .first { $0.id == settings.selectedModelId }?.name ?? "Moonshine model"
@@ -156,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView = NSHostingView(
                 rootView: ModelDownloadProgressView(modelName: modelName)
                     .environment(viewModel)
+                    .environment(settings)
             )
             window.center()
             window.makeKeyAndOrderFront(nil)
