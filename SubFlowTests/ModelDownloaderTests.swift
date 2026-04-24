@@ -79,12 +79,16 @@ struct ModelDownloaderTests {
         #expect(ModelSource.source(for: "") == nil)
     }
 
-    @Test("source URLs use https")
-    func sourceURLsAreHTTPS() {
+    @Test("source URLs are HTTPS on the official Moonshine CDN")
+    func sourceURLsOnMoonshineCDN() {
         let small = ModelSource.source(for: "small-streaming-en")!
         let medium = ModelSource.source(for: "medium-streaming-en")!
-        #expect(small.url.scheme == "https")
-        #expect(medium.url.scheme == "https")
+        for source in [small, medium] {
+            #expect(source.baseURL.scheme == "https")
+            #expect(source.baseURL.host == "download.moonshine.ai")
+        }
+        #expect(small.baseURL.path.contains("small-streaming-en"))
+        #expect(medium.baseURL.path.contains("medium-streaming-en"))
     }
 
     // MARK: - ensureModel fast path

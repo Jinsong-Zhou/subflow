@@ -128,7 +128,7 @@ open "$APP_PATH/SubFlow.app"
 
 **First launch requirements:**
 1. Grant **Screen Recording** permission when prompted (System Settings > Privacy & Security > Screen Recording)
-2. The ASR model zip (~157 MB Small / ~303 MB Medium) downloads automatically from this repo's `models-v1` GitHub Release on first recording start, via `ModelDownloader`. A progress window appears during the one-time download, then the file is cached under `~/Library/Application Support/SubFlow/MoonshineModels/<model-id>/` for all subsequent launches. **Note for contributors building from a fresh clone:** the model assets at that release tag are published by maintainers via `scripts/upload-models.sh` (see Step 8). If the release has no assets yet, first launch will show a download error — run the script once to publish them.
+2. On first recording start, `ModelDownloader` fetches the eight Moonshine `.ort` files (~157 MB Small / ~303 MB Medium total) directly from the official upstream CDN at `https://download.moonshine.ai/model/<model-id>/quantized/<file>` — the same endpoint Moonshine's own `pip install moonshine-voice && python -m moonshine_voice.download` tool uses. A progress window appears during the one-time download, then the files are cached under `~/Library/Application Support/SubFlow/MoonshineModels/<model-id>/` for all subsequent launches. No action required from contributors — SubFlow does not mirror these weights.
 3. May need to restart the app after granting Screen Recording permission
 
 ### Step 6: Remote Control (for Automation)
@@ -148,17 +148,6 @@ tail -f ~/Library/Logs/SubFlow.log
 ```bash
 bash scripts/create-dmg.sh
 # Output: build/SubFlow-1.1.0.dmg
-```
-
-### Step 8: (Maintainers only) Publish model assets
-
-SubFlow downloads the Moonshine `.ort` model bundles from this repo's GitHub
-Releases on first launch. If you change the model files, re-upload them:
-
-```bash
-bash scripts/upload-models.sh models-v1
-# Prints the new URLs + SHA-256 hashes. Paste them into
-# SubFlow/Services/ModelDownloader.swift → ModelSource.source(for:).
 ```
 
 ## Project Structure
@@ -261,7 +250,7 @@ git push origin vx.y.z
 All processing happens on-device:
 - **Audio** — Captured and processed locally, never sent anywhere
 - **Translation** — Apple's on-device Translation framework
-- **No analytics, no telemetry, no network requests** (except the one-time ASR model zip download from the SubFlow GitHub release on first launch)
+- **No analytics, no telemetry, no network requests** (except the one-time ASR model download from Moonshine's official upstream CDN on first launch)
 - **Logs** — `~/Library/Logs/SubFlow.log`, cleared on each launch
 
 ## Known Limitations

@@ -1,40 +1,42 @@
 import Foundation
-import CryptoKit
 
-/// Where a model archive is hosted and (optionally) its integrity hash.
+/// Where to fetch a Moonshine model's files from.
+///
+/// All eight required artifacts live under `<baseURL>/<filename>` on
+/// `download.moonshine.ai` — Moonshine's own public CDN. Because the CDN is
+/// upstream-controlled, there is no self-hosted asset SubFlow has to keep in
+/// sync with model version bumps, and no integrity hash to maintain on our
+/// side (the HTTPS channel is the trust boundary).
 struct ModelSource: Sendable {
-    let url: URL
-    /// Lowercase hex SHA-256 of the zip archive. `nil` = skip integrity check.
-    let expectedSHA256: String?
+    let baseURL: URL
 }
 
 enum ModelDownloadError: LocalizedError {
     case noSource(String)
-    case httpError(Int)
-    case extractionFailed(String)
-    case integrityFailed(String)
+    case httpError(String, Int)
+    case missingContentLength(String)
     case invalidArchive(String)
 
     var errorDescription: String? {
         switch self {
         case .noSource(let id):
             return "No download URL configured for model '\(id)'. " +
-                   "Open ModelSource.swift and paste the URL after running scripts/upload-models.sh."
-        case .httpError(let code):
-            return "Model download failed (HTTP \(code)). Check your internet connection."
-        case .extractionFailed(let msg):
-            return "Archive extraction failed: \(msg)"
-        case .integrityFailed(let msg):
-            return "Downloaded model failed integrity check: \(msg)"
+                   "Open ModelDownloader.swift and add a case in ModelSource.source(for:)."
+        case .httpError(let file, let code):
+            return "Download of \(file) failed (HTTP \(code)). " +
+                   "Check your internet connection and that download.moonshine.ai is reachable."
+        case .missingContentLength(let file):
+            return "Server did not return Content-Length for \(file). " +
+                   "The upstream CDN (download.moonshine.ai) behaviour may have changed."
         case .invalidArchive(let msg):
-            return "Archive did not contain a valid model: \(msg)"
+            return "Model files downloaded but validation failed: \(msg)"
         }
     }
 }
 
-/// Downloads Moonshine ORT model bundles on demand.
+/// Downloads Moonshine ORT model files on demand.
 ///
-/// Model layout on disk (after extraction):
+/// Layout on disk:
 ///   ~/Library/Application Support/SubFlow/MoonshineModels/<modelId>/
 ///     ├── adapter.ort
 ///     ├── cross_kv.ort
@@ -44,8 +46,6 @@ enum ModelDownloadError: LocalizedError {
 ///     ├── frontend.ort
 ///     ├── streaming_config.json
 ///     └── tokenizer.bin
-///
-/// Archives are hosted on GitHub Releases as `<modelId>.zip`.
 enum ModelDownloader {
 
     /// Files that every model directory must contain to be considered complete.
@@ -83,12 +83,16 @@ enum ModelDownloader {
         return true
     }
 
-    /// Ensures the model is available on disk. If missing, downloads and extracts it.
+    /// Ensures the model is available on disk. If missing, downloads each file
+    /// from the upstream Moonshine CDN sequentially into a staging directory,
+    /// then atomically renames staging → final. An aborted download leaves a
+    /// staging dir (never the final dir), so the next attempt starts clean.
+    ///
     /// - Parameters:
     ///   - modelId: e.g. `"small-streaming-en"`.
-    ///   - onProgress: Called with download progress in `[0.0, 1.0]` from an
-    ///     arbitrary queue. Callers wishing to update UI state must hop to the
-    ///     main actor themselves.
+    ///   - onProgress: Called with aggregate download progress in `[0.0, 1.0]`
+    ///     from an arbitrary queue. Caller must hop to the main actor before
+    ///     touching UI state.
     /// - Returns: URL of the ready-to-use model directory.
     @discardableResult
     static func ensureModel(
@@ -107,76 +111,78 @@ enum ModelDownloader {
             throw ModelDownloadError.noSource(modelId)
         }
 
-        AppLogger.log("Downloading model '\(modelId)' from \(source.url)")
+        AppLogger.log("Fetching model '\(modelId)' from \(source.baseURL)")
         try FileManager.default.createDirectory(
             at: modelsDirectory, withIntermediateDirectories: true
         )
 
-        let tempZip = modelsDirectory.appendingPathComponent("\(modelId).download.zip")
-        try? FileManager.default.removeItem(at: tempZip)
+        let staging = modelsDirectory
+            .appendingPathComponent("\(modelId).staging", isDirectory: true)
+        try? FileManager.default.removeItem(at: staging)
+        try FileManager.default.createDirectory(
+            at: staging, withIntermediateDirectories: true
+        )
 
-        let delegate = ProgressDelegate(onProgress: onProgress)
-        // Explicit timeouts: the system default for `timeoutIntervalForResource`
-        // is seven days — a stalled connection would leave the progress window
-        // frozen for a week. Ten minutes is generous for ~450 MB on a sane link.
+        // Explicit timeouts. The default `timeoutIntervalForResource` is seven
+        // days; an idle connection would freeze the progress window for a week.
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 600
         config.waitsForConnectivity = true
-        let session = URLSession(
-            configuration: config, delegate: delegate, delegateQueue: nil
-        )
-        defer { session.invalidateAndCancel() }
 
-        let (downloadedURL, response) = try await session.download(from: source.url)
-        if let http = response as? HTTPURLResponse,
-           !(200..<300).contains(http.statusCode) {
-            throw ModelDownloadError.httpError(http.statusCode)
-        }
-        try FileManager.default.moveItem(at: downloadedURL, to: tempZip)
+        // Phase 1: HEAD all files to learn the grand total, so the progress bar
+        // is byte-accurate (the two decoder files alone are ~65% of a Medium
+        // download — equal-slice progress would look wrong).
+        let sizes = try await discoverSizes(source: source, config: config)
+        let grandTotal = sizes.reduce(0, +)
+        AppLogger.log("Model '\(modelId)' total download size: \(grandTotal) bytes")
 
-        if let expected = source.expectedSHA256 {
-            let actual = try await sha256Hex(of: tempZip)
-            guard actual.lowercased() == expected.lowercased() else {
-                try? FileManager.default.removeItem(at: tempZip)
-                throw ModelDownloadError.integrityFailed(
-                    "expected \(expected), got \(actual)"
-                )
+        // Phase 2: download each file sequentially, reporting cumulative
+        // progress against `grandTotal`.
+        var completed: Int64 = 0
+        for (file, expected) in zip(requiredFiles, sizes) {
+            let fileURL = source.baseURL.appendingPathComponent(file)
+            let destURL = staging.appendingPathComponent(file)
+            let offset = completed
+
+            try await downloadFile(
+                from: fileURL,
+                to: destURL,
+                config: config,
+                onProgress: { fileBytes in
+                    guard grandTotal > 0 else { return }
+                    let overall = Double(offset + fileBytes) / Double(grandTotal)
+                    onProgress(min(1.0, overall))
+                }
+            )
+
+            completed += expected
+            if grandTotal > 0 {
+                onProgress(min(1.0, Double(completed) / Double(grandTotal)))
             }
         }
 
-        let stagingDir = modelsDirectory
-            .appendingPathComponent("\(modelId).staging", isDirectory: true)
-        try? FileManager.default.removeItem(at: stagingDir)
-        try FileManager.default.createDirectory(
-            at: stagingDir, withIntermediateDirectories: true
-        )
-        try await extractZip(at: tempZip, to: stagingDir)
-
-        let extracted = try locateModelRoot(in: stagingDir, modelId: modelId)
-
+        // Atomic swap.
         if FileManager.default.fileExists(atPath: modelDir.path) {
             try FileManager.default.removeItem(at: modelDir)
         }
-        try FileManager.default.moveItem(at: extracted, to: modelDir)
-
-        try? FileManager.default.removeItem(at: stagingDir)
-        try? FileManager.default.removeItem(at: tempZip)
+        try FileManager.default.moveItem(at: staging, to: modelDir)
 
         guard isModelInstalled(modelId) else {
             throw ModelDownloadError.invalidArchive(
-                "Extraction succeeded but required files are missing in \(modelDir.path)"
+                "Downloaded files are missing from \(modelDir.path)"
             )
         }
 
+        onProgress(1.0)
         AppLogger.log("Model '\(modelId)' installed at \(modelDir.path)")
         return modelDir
     }
 
     // MARK: - Internals
 
-    /// Pre-1.0 path name. Move anything from there into the new directory so that
-    /// long-time users don't re-download the 700MB they already have on disk.
+    /// Pre-1.0 path name. Move anything from there into the new directory so
+    /// long-time users don't re-download the ~450MB they already have on disk.
     static func migrateLegacyModelsIfNeeded() {
         let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -198,80 +204,63 @@ enum ModelDownloader {
         }
     }
 
-    private static func locateModelRoot(in stagingDir: URL, modelId: String) throws -> URL {
-        let fm = FileManager.default
-        let rootContents = (try? fm.contentsOfDirectory(atPath: stagingDir.path)) ?? []
+    private static func discoverSizes(
+        source: ModelSource, config: URLSessionConfiguration
+    ) async throws -> [Int64] {
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
 
-        if requiredFiles.allSatisfy({ rootContents.contains($0) }) {
-            return stagingDir
-        }
+        var sizes: [Int64] = []
+        for file in requiredFiles {
+            var request = URLRequest(url: source.baseURL.appendingPathComponent(file))
+            request.httpMethod = "HEAD"
+            let (_, response) = try await session.data(for: request)
 
-        for name in rootContents {
-            let candidate = stagingDir.appendingPathComponent(name, isDirectory: true)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: candidate.path, isDirectory: &isDir),
-                  isDir.boolValue else { continue }
-            let nested = (try? fm.contentsOfDirectory(atPath: candidate.path)) ?? []
-            if requiredFiles.allSatisfy({ nested.contains($0) }) {
-                return candidate
+            guard let http = response as? HTTPURLResponse else {
+                throw ModelDownloadError.httpError(file, -1)
             }
+            guard (200..<300).contains(http.statusCode) else {
+                throw ModelDownloadError.httpError(file, http.statusCode)
+            }
+            guard response.expectedContentLength > 0 else {
+                throw ModelDownloadError.missingContentLength(file)
+            }
+            sizes.append(response.expectedContentLength)
         }
+        return sizes
+    }
 
-        throw ModelDownloadError.invalidArchive(
-            "Zip does not contain the expected files for '\(modelId)'. " +
-            "Found at root: \(rootContents)"
+    private static func downloadFile(
+        from url: URL,
+        to destination: URL,
+        config: URLSessionConfiguration,
+        onProgress: @escaping @Sendable (Int64) -> Void
+    ) async throws {
+        let delegate = ProgressDelegate(onProgress: onProgress)
+        let session = URLSession(
+            configuration: config, delegate: delegate, delegateQueue: nil
         )
-    }
+        defer { session.invalidateAndCancel() }
 
-    /// Runs `/usr/bin/unzip` on a detached task so `Process.waitUntilExit()`
-    /// cannot block whichever executor `ensureModel` happens to be suspended on.
-    /// Unzipping a 300 MB archive takes tens of seconds on a typical Mac — more
-    /// than enough to freeze the UI if this ran on the main actor.
-    private static func extractZip(at zip: URL, to dest: URL) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-            proc.arguments = ["-q", "-o", zip.path, "-d", dest.path]
-            let err = Pipe()
-            proc.standardError = err
-            do {
-                try proc.run()
-            } catch {
-                throw ModelDownloadError.extractionFailed(error.localizedDescription)
-            }
-            proc.waitUntilExit()
-            guard proc.terminationStatus == 0 else {
-                let stderr = String(
-                    data: err.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                ) ?? ""
-                throw ModelDownloadError.extractionFailed(
-                    "unzip exit \(proc.terminationStatus): \(stderr)"
-                )
-            }
-        }.value
-    }
+        let (downloadedURL, response) = try await session.download(from: url)
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            throw ModelDownloadError.httpError(url.lastPathComponent, http.statusCode)
+        }
 
-    /// Same rationale as `extractZip`: `Data(contentsOf:)` + `SHA256.hash` reads
-    /// and hashes up to ~300 MB synchronously. Run on a detached task.
-    private static func sha256Hex(of file: URL) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
-            let data = try Data(contentsOf: file, options: .mappedIfSafe)
-            return SHA256.hash(data: data)
-                .map { String(format: "%02x", $0) }
-                .joined()
-        }.value
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: downloadedURL, to: destination)
     }
 }
 
-// MARK: - URLSession delegate forwarding progress.
+// MARK: - URLSession delegate forwarding per-file progress.
 
 private final class ProgressDelegate: NSObject,
     URLSessionDownloadDelegate, @unchecked Sendable
 {
-    let onProgress: @Sendable (Double) -> Void
+    let onProgress: @Sendable (Int64) -> Void
 
-    init(onProgress: @escaping @Sendable (Double) -> Void) {
+    init(onProgress: @escaping @Sendable (Int64) -> Void) {
         self.onProgress = onProgress
     }
 
@@ -282,8 +271,7 @@ private final class ProgressDelegate: NSObject,
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        onProgress(totalBytesWritten)
     }
 
     func urlSession(
@@ -295,45 +283,28 @@ private final class ProgressDelegate: NSObject,
     }
 }
 
-// MARK: - User-configurable source table.
+// MARK: - Source table.
 
 extension ModelSource {
-    /// Returns where to download `modelId` from, or `nil` if there is no known source.
+    /// Returns the upstream URL prefix to fetch `modelId` from, or `nil` for
+    /// unknown IDs.
     ///
-    /// ## Pine — fill this in after the first upload.
-    ///
-    /// Run `scripts/upload-models.sh <release-tag>` to:
-    ///   1. Zip both local model directories.
-    ///   2. Upload them to a GitHub Release.
-    ///   3. Print the browser download URL and SHA-256 of each zip.
-    ///
-    /// Paste those URLs and hashes into the `switch` below. The first time a new
-    /// user launches SubFlow, this function tells the downloader where to fetch
-    /// the ~157 MB (Small) or ~303 MB (Medium) archive from.
-    ///
-    /// ### Decisions encoded here
-    ///
-    /// - **Release-tag strategy.** The template uses `models-v1` — a dedicated tag
-    ///   that is independent of app version, so every app release does not have to
-    ///   re-upload hundreds of MB. Bump to `models-v2` only when Moonshine model
-    ///   weights actually change.
-    /// - **Integrity.** Passing a non-nil `expectedSHA256` makes the downloader
-    ///   verify the zip before extracting. This catches corrupted downloads and
-    ///   any tampering. Skip (`nil`) only if you really trust HTTPS end-to-end.
+    /// Moonshine publishes each model's `.ort` files at
+    /// `https://download.moonshine.ai/model/<modelId>/quantized/<file>` — the
+    /// same CDN their `pip install moonshine-voice && python -m
+    /// moonshine_voice.download --language en` tooling hits under the hood.
+    /// Pointing SubFlow at that CDN directly avoids mirroring model weights on
+    /// our own GitHub and keeps us on whichever version upstream ships.
     static func source(for modelId: String) -> ModelSource? {
-        let base = "https://github.com/Jinsong-Zhou/subflow/releases/download/models-v1"
+        let base = "https://download.moonshine.ai/model"
         switch modelId {
         case "small-streaming-en":
             return ModelSource(
-                url: URL(string: "\(base)/small-streaming-en.zip")!,
-                // TODO: replace with the SHA-256 printed by scripts/upload-models.sh
-                expectedSHA256: nil
+                baseURL: URL(string: "\(base)/small-streaming-en/quantized")!
             )
         case "medium-streaming-en":
             return ModelSource(
-                url: URL(string: "\(base)/medium-streaming-en.zip")!,
-                // TODO: replace with the SHA-256 printed by scripts/upload-models.sh
-                expectedSHA256: nil
+                baseURL: URL(string: "\(base)/medium-streaming-en/quantized")!
             )
         default:
             return nil
