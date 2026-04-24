@@ -25,12 +25,17 @@ targets:
         SWIFT_VERSION: "6.0"
         CODE_SIGN_ENTITLEMENTS: SubFlow/Resources/SubFlow.entitlements
         INFOPLIST_FILE: SubFlow/Resources/Info.plist
-        CODE_SIGN_IDENTITY: "Apple Development"
-        DEVELOPMENT_TEAM: 6ZWM88SUVJ
+        CODE_SIGN_IDENTITY: "-"
+        # DEVELOPMENT_TEAM is intentionally unset. The default `-` identity is
+        # ad-hoc signing, which requires no team. When a contributor opens the
+        # project in Xcode and hits Run, Xcode's Signing & Capabilities tab
+        # lets them flip to automatic signing with their own Apple ID Personal
+        # Team in one click — the choice lives in xcuserdata and is not
+        # committed. CLI builds (`xcodebuild test` etc.) keep using ad-hoc so
+        # CI and contributor machines with no signed-in Apple ID still pass.
       configs:
         Release:
           CODE_SIGN_IDENTITY: "-"
-          DEVELOPMENT_TEAM: ""
           CODE_SIGNING_REQUIRED: "NO"
           CODE_SIGNING_ALLOWED: "NO"
     dependencies:
