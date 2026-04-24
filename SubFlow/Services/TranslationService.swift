@@ -3,10 +3,10 @@ import Translation
 final class TranslationService: @unchecked Sendable {
     private var session: TranslationSession?
 
-    var configuration: TranslationSession.Configuration {
+    func configuration(target: TranslationTarget) -> TranslationSession.Configuration {
         TranslationSession.Configuration(
             source: .init(identifier: "en"),
-            target: .init(identifier: "zh-Hans")
+            target: .init(identifier: target.rawValue)
         )
     }
 

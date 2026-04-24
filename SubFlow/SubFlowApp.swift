@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupRemoteControl()
         updateFloatingPanelWithTranslation()
         observePanelWidth()
+        observeTranslationTarget()
         observeDownloadProgress()
 
         viewModel.preloadModel(modelId: settings.selectedModelId)
@@ -115,7 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateFloatingPanelWithTranslation() {
-        let config = viewModel.translationService.configuration
+        let config = viewModel.translationService.configuration(
+            target: settings.translationTarget
+        )
         let content = FloatingCaptionView()
             .environment(viewModel)
             .environment(settings)
@@ -179,6 +182,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor [weak self] in
                 self?.updatePanelFrame()
                 self?.observePanelWidth()
+            }
+        }
+    }
+
+    /// Rebuild the floating panel's hosting view when the user picks a new
+    /// Chinese variant. `.translationTask(config)` is pinned to the view at
+    /// mount time; replacing the NSHostingView is the cleanest way to force
+    /// SwiftUI to request a new TranslationSession for the new BCP-47 target.
+    private func observeTranslationTarget() {
+        withObservationTracking {
+            let _ = settings.translationTarget
+        } onChange: {
+            Task { @MainActor [weak self] in
+                self?.updateFloatingPanelWithTranslation()
+                self?.observeTranslationTarget()
             }
         }
     }

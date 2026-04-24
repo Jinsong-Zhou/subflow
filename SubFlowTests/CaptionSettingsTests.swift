@@ -115,3 +115,66 @@ import Foundation
     // Cleanup
     defaults.removeObject(forKey: "fontSize")
 }
+
+// MARK: - TranslationTarget
+
+@Test func translationTargetRawValuesAreBCP47() {
+    #expect(TranslationTarget.simplifiedChinese.rawValue == "zh-Hans")
+    #expect(TranslationTarget.traditionalChineseTaiwan.rawValue == "zh-Hant-TW")
+}
+
+@Test func translationTargetAllCasesContainsBoth() {
+    let ids = TranslationTarget.allCases.map(\.rawValue)
+    #expect(ids.contains("zh-Hans"))
+    #expect(ids.contains("zh-Hant-TW"))
+}
+
+@Test func translationTargetHasDisplayNames() {
+    // Display names are for human readers; verify non-empty and distinct so
+    // the Settings picker never shows two identical rows.
+    let names = TranslationTarget.allCases.map(\.displayName)
+    #expect(names.allSatisfy { !$0.isEmpty })
+    #expect(Set(names).count == names.count)
+}
+
+@Test @MainActor func captionSettingsDefaultTranslationTargetIsSimplified() {
+    let defaults = UserDefaults.standard
+    defaults.removeObject(forKey: "translationTarget")
+
+    let settings = CaptionSettings()
+    #expect(settings.translationTarget == .simplifiedChinese)
+}
+
+@Test @MainActor func captionSettingsPersistsTranslationTarget() {
+    let defaults = UserDefaults.standard
+    defaults.removeObject(forKey: "translationTarget")
+
+    let settings = CaptionSettings()
+    settings.translationTarget = .traditionalChineseTaiwan
+    #expect(defaults.string(forKey: "translationTarget") == "zh-Hant-TW")
+
+    // Cleanup
+    defaults.removeObject(forKey: "translationTarget")
+}
+
+@Test @MainActor func captionSettingsLoadsPersistedTranslationTarget() {
+    let defaults = UserDefaults.standard
+    defaults.set("zh-Hant-TW", forKey: "translationTarget")
+
+    let settings = CaptionSettings()
+    #expect(settings.translationTarget == .traditionalChineseTaiwan)
+
+    // Cleanup
+    defaults.removeObject(forKey: "translationTarget")
+}
+
+@Test @MainActor func captionSettingsInvalidTranslationTargetFallsBackToDefault() {
+    let defaults = UserDefaults.standard
+    defaults.set("ja-JP", forKey: "translationTarget")
+
+    let settings = CaptionSettings()
+    #expect(settings.translationTarget == .simplifiedChinese)
+
+    // Cleanup
+    defaults.removeObject(forKey: "translationTarget")
+}
