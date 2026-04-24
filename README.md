@@ -128,7 +128,7 @@ open "$APP_PATH/SubFlow.app"
 
 **First launch requirements:**
 1. Grant **Screen Recording** permission when prompted (System Settings > Privacy & Security > Screen Recording)
-2. The ASR model (~303 MB) downloads automatically on first recording start
+2. On first recording start, `ModelDownloader` fetches the eight Moonshine `.ort` files (~157 MB Small / ~303 MB Medium total) directly from the official upstream CDN at `https://download.moonshine.ai/model/<model-id>/quantized/<file>` — the same endpoint Moonshine's own `pip install moonshine-voice && python -m moonshine_voice.download` tool uses. A progress window appears during the one-time download, then the files are cached under `~/Library/Application Support/SubFlow/MoonshineModels/<model-id>/` for all subsequent launches. No action required from contributors — SubFlow does not mirror these weights.
 3. May need to restart the app after granting Screen Recording permission
 
 ### Step 6: Remote Control (for Automation)
@@ -250,7 +250,7 @@ git push origin vx.y.z
 All processing happens on-device:
 - **Audio** — Captured and processed locally, never sent anywhere
 - **Translation** — Apple's on-device Translation framework
-- **No analytics, no telemetry, no network requests** (except ASR model download on first use)
+- **No analytics, no telemetry, no network requests** (except the one-time ASR model download from Moonshine's official upstream CDN on first launch)
 - **Logs** — `~/Library/Logs/SubFlow.log`, cleared on each launch
 
 ## Known Limitations
