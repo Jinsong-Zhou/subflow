@@ -125,10 +125,13 @@ enum ModelDownloader {
 
         // Explicit timeouts. The default `timeoutIntervalForResource` is seven
         // days; an idle connection would freeze the progress window for a week.
+        // `waitsForConnectivity = false`: this is a foreground download the
+        // user is actively watching — fail fast so retries kick in, do not
+        // silently wait up to a minute for a flaky network to come back.
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 600
-        config.waitsForConnectivity = true
+        config.waitsForConnectivity = false
 
         // Phase 1: HEAD all files to learn the grand total, so the progress bar
         // is byte-accurate (the two decoder files alone are ~65% of a Medium
@@ -230,26 +233,79 @@ enum ModelDownloader {
         return sizes
     }
 
+    /// Maximum number of attempts per file before giving up. Each attempt starts
+    /// with a fresh `URLSession` so transient proxy/NAT state from a previous
+    /// failure cannot stick around. Covers the common case of an intermittent
+    /// MITM proxy or QUIC-fallback hiccup.
+    private static let downloadMaxAttempts = 3
+
     private static func downloadFile(
         from url: URL,
         to destination: URL,
         config: URLSessionConfiguration,
         onProgress: @escaping @Sendable (Int64) -> Void
     ) async throws {
-        let delegate = ProgressDelegate(onProgress: onProgress)
-        let session = URLSession(
-            configuration: config, delegate: delegate, delegateQueue: nil
-        )
-        defer { session.invalidateAndCancel() }
-
-        let (downloadedURL, response) = try await session.download(from: url)
-        if let http = response as? HTTPURLResponse,
-           !(200..<300).contains(http.statusCode) {
-            throw ModelDownloadError.httpError(url.lastPathComponent, http.statusCode)
+        // Some proxies display progress monotonically going backwards on retry
+        // because the second attempt's `totalBytesWritten` starts at 0 again.
+        // Wrap `onProgress` with a high-water mark so the UI never regresses.
+        let maxReported = HighWaterMark()
+        let guardedProgress: @Sendable (Int64) -> Void = { bytes in
+            onProgress(maxReported.record(bytes))
         }
 
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: downloadedURL, to: destination)
+        var lastError: Error?
+        for attempt in 1...downloadMaxAttempts {
+            do {
+                let delegate = ProgressDelegate(onProgress: guardedProgress)
+                let session = URLSession(
+                    configuration: config, delegate: delegate, delegateQueue: nil
+                )
+                defer { session.invalidateAndCancel() }
+
+                let (downloadedURL, response) = try await session.download(from: url)
+                if let http = response as? HTTPURLResponse,
+                   !(200..<300).contains(http.statusCode) {
+                    throw ModelDownloadError.httpError(
+                        url.lastPathComponent, http.statusCode
+                    )
+                }
+
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: downloadedURL, to: destination)
+                if attempt > 1 {
+                    AppLogger.log(
+                        "Retry succeeded for \(url.lastPathComponent) on attempt \(attempt)"
+                    )
+                }
+                return
+            } catch {
+                lastError = error
+                let ns = error as NSError
+                AppLogger.log(
+                    "Download attempt \(attempt)/\(downloadMaxAttempts) failed for \(url.lastPathComponent): " +
+                    "\(ns.domain) code=\(ns.code) \(ns.localizedDescription)"
+                )
+                if attempt == downloadMaxAttempts { break }
+                // Exponential backoff: 1s, 2s.
+                let seconds = 1 << (attempt - 1)
+                try await Task.sleep(for: .seconds(seconds))
+            }
+        }
+        throw lastError ?? ModelDownloadError.httpError(url.lastPathComponent, -1)
+    }
+}
+
+/// Thread-safe high-water mark for progress reporting. Prevents the UI from
+/// visually regressing when a retry restarts bytes at zero.
+private final class HighWaterMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var max: Int64 = 0
+
+    func record(_ bytes: Int64) -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        if bytes > max { max = bytes }
+        return max
     }
 }
 

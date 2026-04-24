@@ -69,7 +69,7 @@ final class CaptionViewModel {
                 self.downloadError = nil
                 AppLogger.log("Model loaded successfully: \(modelId)")
             } catch {
-                AppLogger.log("Model load failed: \(error.localizedDescription)")
+                AppLogger.log("Model load failed: \(Self.describe(error))")
                 let message = "Model load failed: \(error.localizedDescription)"
                 self.statusMessage = message
                 // Set error BEFORE clearing progress so the progress window
@@ -80,6 +80,22 @@ final class CaptionViewModel {
             }
             self.isLoading = false
         }
+    }
+
+    /// Produce a detailed log line for an error, walking the `NSError` chain so
+    /// URLSession's `-1200 NSURLErrorSecureConnectionFailed` / etc. surface
+    /// their underlying CFStream/OSStatus codes instead of the friendly string
+    /// alone.
+    private nonisolated static func describe(_ error: Error) -> String {
+        var parts: [String] = []
+        var current: NSError? = error as NSError
+        var depth = 0
+        while let err = current, depth < 4 {
+            parts.append("\(err.domain) code=\(err.code) \"\(err.localizedDescription)\"")
+            current = err.userInfo[NSUnderlyingErrorKey] as? NSError
+            depth += 1
+        }
+        return parts.joined(separator: " → ")
     }
 
     /// Dismiss the last `downloadError`, e.g. after the user clicks the
