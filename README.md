@@ -29,18 +29,25 @@ Built for Apple Silicon Macs.
 - **Xcode 26.0+** — for building from source
 - **Screen Recording permission** — needed to capture system audio via ScreenCaptureKit
 
-## Installation (Download)
+## Installation
 
-1. Go to the [Releases](../../releases) page
-2. Download the latest `SubFlow-x.x.x.dmg`
-3. Open the DMG and drag **SubFlow** to `/Applications`
-4. **Right-click** the app > **Open** (required on first launch since the app is not notarized)
-5. Grant **Screen Recording** permission: System Settings > Privacy & Security > Screen Recording > enable **SubFlow**
+SubFlow is distributed as source. Clone the repo, open in Xcode, hit Run. No DMG, no notarization ceremony — a free Apple ID signed into Xcode is enough to build and run locally; a paid Apple Developer Program membership is **not** required.
 
-## Building from Source (for AI Agents)
+The [Quick start](#quick-start) below is copy-pasteable from top to bottom.
 
-> **This section is designed for AI coding agents (Claude Code, Cursor, Trae, etc.).**
-> Follow these steps exactly. Every command is copy-pasteable.
+### Quick start
+
+```bash
+brew install xcodegen
+git clone https://github.com/Jinsong-Zhou/subflow.git
+cd subflow
+xcodegen generate
+open SubFlow.xcodeproj
+```
+
+Then, in Xcode, press **Run** (⌘R). If it prompts for a signing team, pick your own Apple ID's Personal Team from the dropdown.
+
+The rest of this section walks through the same steps with more detail, plus test commands and troubleshooting.
 
 ### Step 0: Verify Prerequisites
 
@@ -105,7 +112,7 @@ xcodebuild test \
   -scheme SubFlowTests \
   -destination 'platform=macOS'
 
-# Expected output: "Test run with 76 tests in 1 suite passed"
+# Expected output: "Test run with 84 tests in 2 suites passed"
 # Expected output: "** TEST SUCCEEDED **"
 ```
 
@@ -143,12 +150,19 @@ touch /tmp/tc-toggle
 tail -f ~/Library/Logs/SubFlow.log
 ```
 
-### Step 7: Create DMG for Distribution
+### Troubleshooting
 
+**Build fails with Swift package resolution errors** — run once, then retry:
 ```bash
-bash scripts/create-dmg.sh
-# Output: build/SubFlow-1.1.0.dmg
+xcodebuild -resolvePackageDependencies -project SubFlow.xcodeproj
 ```
+
+**First-launch model download fails** — SubFlow pulls the Moonshine weights from `download.moonshine.ai` and retries each file three times with exponential backoff, which covers most transient network hiccups. If it still fails, two common causes:
+
+- **Shell proxy vs system proxy.** `URLSession` reads the *system-level* proxy settings (System Settings → Network → your network → Details → Proxies), not `HTTP_PROXY` / `HTTPS_PROXY` shell environment variables. If your proxy works from `curl` but not from SubFlow, it's probably only configured at the shell level.
+- **Connectivity to `download.moonshine.ai`.** Quick check: `curl -sI https://download.moonshine.ai/model/medium-streaming-en/quantized/adapter.ort | head -1` should return `HTTP/2 200`. If it hangs or fails, the issue is between your network and Moonshine's CDN (hosted on Google Cloud).
+
+**"Developer cannot be verified" on launch** — you built SubFlow locally, so it is signed with your own Apple ID's Personal Team; macOS should not block it. If you copied the built `.app` to another machine, that Team is untrusted there — either rebuild on that machine, or right-click → **Open** once to bypass Gatekeeper.
 
 ## Project Structure
 
@@ -230,21 +244,6 @@ System Audio → ScreenCaptureKit → 16kHz Float samples
 - **Font Size** — 10pt to 24pt (default: 15pt)
 - **ASR Model** — Small (faster) or Medium (more accurate, default)
 
-## Release Process
-
-Releases are automated via GitHub Actions:
-
-```bash
-# 1. Update MARKETING_VERSION in project.yml
-# 2. Commit
-git add -A && git commit -m "chore: bump version to x.y.z"
-git push origin main
-
-# 3. Tag → CI builds DMG and creates GitHub Release
-git tag -a vx.y.z -m "vx.y.z: description"
-git push origin vx.y.z
-```
-
 ## Privacy
 
 All processing happens on-device:
@@ -258,7 +257,7 @@ All processing happens on-device:
 - English-only speech recognition (Moonshine ASR)
 - Translation: English → Simplified Chinese only
 - Requires macOS 26.0+ and Apple Silicon
-- Not notarized — Gatekeeper warning on first launch
+- No binary distribution — see [Installation](#installation) to build from source
 
 ## License
 
